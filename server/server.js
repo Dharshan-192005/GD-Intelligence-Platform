@@ -7,10 +7,22 @@ const {
   getHistory,
   getSessionById,
   getAIResponse,
-  completeSession
+  completeSession,
+  moderateGD
 } = require('./controllers/sessionController');
 
+const http = require('http');
+const { Server } = require('socket.io');
+
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 
 // Enable CORS for frontend connectivity
@@ -36,8 +48,13 @@ app.get('/api/health', (req, res) => {
 });
 
 // Group Discussion Sessions API Routes
+const topicRoutes = require('./routes/topicRoutes');
+
+app.use('/api/topics', topicRoutes);
+
 app.post('/api/sessions', createSession);
 app.get('/api/sessions/history', getHistory);
+app.post('/api/sessions/moderate', moderateGD);
 app.post('/api/sessions/generate-response', getAIResponse);
 app.get('/api/sessions/:id', getSessionById);
 app.post('/api/sessions/:id/complete', completeSession);
@@ -53,8 +70,30 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal Server Error. Please inspect server logs.' });
 });
 
+// Socket.io integration
+io.on('connection', (socket) => {
+  console.log(`[Socket] User connected: ${socket.id}`);
+
+  socket.on('join-room', (roomId) => {
+    socket.join(roomId);
+    console.log(`[Socket] User ${socket.id} joined room ${roomId}`);
+  });
+
+  socket.on('send-message', (data) => {
+    socket.to(data.roomId).emit('receive-message', data.message);
+  });
+
+  socket.on('sync-state', (data) => {
+    socket.to(data.roomId).emit('sync-state', data.state);
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`[Socket] User disconnected: ${socket.id}`);
+  });
+});
+
 // Start Express Server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`===================================================`);
   console.log(`🚀 Group Discussion Intelligence Server started on port ${PORT}`);
   console.log(`📌 Health check available at: http://localhost:${PORT}/api/health`);

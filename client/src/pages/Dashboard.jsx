@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Play, Sparkles, BookOpen, Clock, Users, Calendar, BarChart2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Play, Sparkles, BookOpen, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 
 const SUGGESTED_TOPICS = [
   "AI: A Boon or a Bane for Employment?",
@@ -15,13 +16,29 @@ const PARTICIPANTS = [
   { name: 'Kabir', role: 'The Skeptic', style: 'Devil\'s Advocate', color: '#f59e0b', desc: 'Questions foundational assumptions, points out logical fallacies, and demands solid justifications.' }
 ];
 
+const INDUSTRY_CONTEXTS = [
+  "General / Academic",
+  "Corporate Strategy",
+  "Tech Startup / Agile",
+  "MBA Admissions",
+  "Creative Agency"
+];
+
 export default function Dashboard({ onStartSession, onViewReport }) {
   const [topic, setTopic] = useState(SUGGESTED_TOPICS[0]);
+  const [industryContext, setIndustryContext] = useState(INDUSTRY_CONTEXTS[0]);
   const [duration, setDuration] = useState(2); // default 2 minutes for testing
+  const [numParticipants, setNumParticipants] = useState(4);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Resume upload state
+  const [resumeTopics, setResumeTopics] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     fetchHistory();
@@ -43,6 +60,46 @@ export default function Dashboard({ onStartSession, onViewReport }) {
     }
   };
 
+  const handleResumeUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+      setIsUploading(true);
+      setUploadError(null);
+      const formData = new FormData();
+      formData.append('resume', file);
+
+      const res = await fetch('http://localhost:5000/api/topics/from-resume', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!res.ok) throw new Error('Failed to generate topics from resume');
+      const data = await res.json();
+      setResumeTopics(data.topics);
+      if (data.topics && data.topics.length > 0) {
+        setTopic(data.topics[0]); // Auto-select first custom topic
+      }
+    } catch (err) {
+      console.error('Resume upload error:', err);
+      setUploadError('Failed to generate AI topics from resume.');
+      
+      // Standalone sandbox fallback
+      const mockTopics = [
+        "Analyzing Your Core Competencies Against Market Trends",
+        "Strategic Pivots: Bridging Your Past Experience to Future Tech",
+        "Leadership & Execution: A Discussion on Your Career Trajectory"
+      ];
+      setResumeTopics(mockTopics);
+      setTopic(mockTopics[0]);
+    } finally {
+      setIsUploading(false);
+      // Reset input so the same file can be uploaded again if needed
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   const handleStart = async (e) => {
     e.preventDefault();
     if (!topic.trim()) return;
@@ -52,7 +109,7 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       const res = await fetch('http://localhost:5000/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, durationLimit: duration })
+        body: JSON.stringify({ topic, durationLimit: duration, industryContext, numParticipants })
       });
 
       if (!res.ok) throw new Error('Failed to initialize session');
@@ -64,7 +121,9 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       const mockSession = {
         _id: 'mock_' + Math.random().toString(36).substring(2, 9),
         topic,
+        industryContext,
         durationLimit: duration,
+        numParticipants,
         createdAt: new Date(),
         transcript: [],
         userMetrics: { speakingTime: 0, speakPercentage: 0, interruptionCount: 0, interruptedCount: 0, pacingWpm: 0, fillerWordCount: 0 },
@@ -114,7 +173,7 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px', alignItems: 'start' }}>
         
         {/* GD Configurator Form */}
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div className="flat-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Sparkles style={{ color: 'var(--primary)' }} />
             <h2 style={{ fontSize: '1.4rem' }}>Configure Discussion</h2>
@@ -156,7 +215,7 @@ export default function Dashboard({ onStartSession, onViewReport }) {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 {SUGGESTED_TOPICS.map((t, idx) => (
                   <button
-                    key={idx}
+                    key={`sug-${idx}`}
                     type="button"
                     onClick={() => setTopic(t)}
                     style={{
@@ -171,6 +230,129 @@ export default function Dashboard({ onStartSession, onViewReport }) {
                     }}
                   >
                     {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Resume Upload AI Topics */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Sparkles size={14} /> AI TOPICS FROM RESUME:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  style={{
+                    background: 'none',
+                    border: '1px solid var(--primary)',
+                    color: 'var(--primary)',
+                    padding: '6px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  {isUploading ? <><span className="spinning-icon"><RefreshCw size={14} /></span> Analyzing...</> : <><Upload size={14} /> Upload Resume (PDF/TXT)</>}
+                </button>
+                <input
+                  type="file"
+                  accept=".pdf,.txt"
+                  ref={fileInputRef}
+                  style={{ display: 'none' }}
+                  onChange={handleResumeUpload}
+                />
+              </div>
+
+              {uploadError && <div style={{ fontSize: '0.8rem', color: 'var(--accent-red)' }}>{uploadError}</div>}
+              
+              {resumeTopics.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
+                  {resumeTopics.map((t, idx) => (
+                    <button
+                      key={`res-${idx}`}
+                      type="button"
+                      onClick={() => setTopic(t)}
+                      style={{
+                        background: topic === t ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.03)',
+                        border: topic === t ? '1px solid var(--accent-green)' : '1px dashed var(--border-color)',
+                        color: topic === t ? 'var(--accent-green)' : 'var(--text-muted)',
+                        padding: '8px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        transition: 'var(--transition-smooth)'
+                      }}
+                    >
+                      <FileText size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: 'text-top' }} />
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Industry Context Input */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                INDUSTRY CONTEXT (AI PERSONAS)
+              </label>
+              <select
+                value={industryContext}
+                onChange={(e) => setIndustryContext(e.target.value)}
+                style={{
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '14px',
+                  color: 'var(--text-main)',
+                  fontSize: '1rem',
+                  outline: 'none',
+                  transition: 'var(--transition-smooth)',
+                  cursor: 'pointer'
+                }}
+                onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
+                onBlur={(e) => e.target.style.borderColor = 'var(--border-color)'}
+              >
+                {INDUSTRY_CONTEXTS.map((ctx) => (
+                  <option key={ctx} value={ctx} style={{ color: '#000' }}>{ctx}</option>
+                ))}
+              </select>
+            </div>
+            {/* AI Participants Count Input */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                NUMBER OF AI PARTICIPANTS
+              </label>
+              <div style={{ display: 'flex', gap: '15px' }}>
+                {[2, 3, 4].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setNumParticipants(num)}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      borderRadius: '10px',
+                      background: numParticipants === num ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.03)',
+                      border: numParticipants === num ? '1px solid var(--accent-green)' : '1px solid var(--border-color)',
+                      color: numParticipants === num ? 'var(--accent-green)' : 'var(--text-main)',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      transition: 'var(--transition-smooth)'
+                    }}
+                  >
+                    <Users size={16} />
+                    {num} Members
                   </button>
                 ))}
               </div>
@@ -236,10 +418,10 @@ export default function Dashboard({ onStartSession, onViewReport }) {
           </div>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {PARTICIPANTS.map((p, idx) => (
+            {PARTICIPANTS.slice(0, numParticipants).map((p, idx) => (
               <div
                 key={idx}
-                className="glass-card"
+                className="flat-card"
                 style={{
                   padding: '16px',
                   display: 'flex',
@@ -294,18 +476,51 @@ export default function Dashboard({ onStartSession, onViewReport }) {
             Loading historical performance...
           </div>
         ) : history.length === 0 ? (
-          <div className="glass-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+          <div className="flat-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
             <Calendar size={40} style={{ margin: '0 auto 10px', opacity: 0.3 }} />
             <p>No group discussions found. Complete your first practice round above!</p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '15px' }}>
-            {history.map((h) => {
-              const score = h.aiEvaluation ? Math.round((h.aiEvaluation.leadershipScore + h.aiEvaluation.confidenceScore + h.aiEvaluation.effectivenessScore) / 3) : 0;
+          <>
+            {/* Visual Progress Chart */}
+            <div className="flat-card" style={{ marginBottom: '30px', padding: '24px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
+                <TrendingUp style={{ color: 'var(--primary)' }} size={20} />
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Performance Over Time</h3>
+              </div>
+              <div style={{ height: '250px', width: '100%' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={[...history].reverse().filter(h => h.aiEvaluation).map((h, i) => ({
+                    name: `S${i + 1}`,
+                    date: new Date(h.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+                    Leadership: h.aiEvaluation.leadershipScore,
+                    Confidence: h.aiEvaluation.confidenceScore,
+                    Effectiveness: h.aiEvaluation.effectivenessScore
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} />
+                    <Tooltip 
+                      contentStyle={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '8px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}
+                      labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
+                    />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '0.8rem', paddingTop: '10px' }} />
+                    <Line type="monotone" dataKey="Leadership" stroke="#c084fc" strokeWidth={3} dot={{ r: 4, fill: '#c084fc', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="Confidence" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4, fill: '#22d3ee', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="Effectiveness" stroke="#34d399" strokeWidth={3} dot={{ r: 4, fill: '#34d399', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* List */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '15px' }}>
+              {history.map((h) => {
+                const score = h.aiEvaluation ? Math.round((h.aiEvaluation.leadershipScore + h.aiEvaluation.confidenceScore + h.aiEvaluation.effectivenessScore) / 3) : 0;
               return (
                 <div
                   key={h._id}
-                  className="glass-card"
+                  className="flat-card"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -367,6 +582,7 @@ export default function Dashboard({ onStartSession, onViewReport }) {
               );
             })}
           </div>
+          </>
         )}
       </div>
 

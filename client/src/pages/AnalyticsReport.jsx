@@ -1,10 +1,10 @@
 import React from 'react';
-import { ArrowLeft, Award, Zap, Smile, BookOpen, Clock, Activity, MessageSquare, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Award, Zap, Smile, BookOpen, Clock, Activity, MessageSquare, AlertCircle, Camera, ArrowRight } from 'lucide-react';
 
 export default function AnalyticsReport({ session, onBack }) {
   if (!session || !session.aiEvaluation) {
     return (
-      <div className="glass-card" style={{ maxWidth: '600px', margin: '100px auto', padding: '40px', textAlign: 'center' }}>
+      <div className="flat-card" style={{ maxWidth: '600px', margin: '100px auto', padding: '40px', textAlign: 'center' }}>
         <h2>Loading Analytics...</h2>
         <p>Diagnostics analysis could not be retrieved. Please go back and try again.</p>
         <button onClick={onBack} className="btn-secondary" style={{ marginTop: '20px' }}>
@@ -23,7 +23,7 @@ export default function AnalyticsReport({ session, onBack }) {
     const strokeDashoffset = circumference - (score / 100) * circumference;
 
     return (
-      <div className="glass-card" style={{
+      <div className="flat-card" style={{
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -91,7 +91,7 @@ export default function AnalyticsReport({ session, onBack }) {
       </button>
 
       {/* Top Banner Overview */}
-      <div className="glass-card" style={{
+      <div className="flat-card" style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
@@ -119,11 +119,12 @@ export default function AnalyticsReport({ session, onBack }) {
         </div>
       </div>
 
-      {/* Grid: 3 Core Gauges */}
+      {/* Grid: 4 Core Gauges */}
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '30px' }}>
         <CircularGauge score={aiEvaluation.leadershipScore} label="Leadership presence" color="#c084fc" icon={Award} />
         <CircularGauge score={aiEvaluation.confidenceScore} label="Confidence Index" color="#22d3ee" icon={Zap} />
         <CircularGauge score={aiEvaluation.effectivenessScore} label="Communication Effectiveness" color="#34d399" icon={Smile} />
+        <CircularGauge score={userMetrics.bodyLanguageScore || 0} label="Visual Presence" color="#f59e0b" icon={Camera} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '30px', alignItems: 'start', marginBottom: '30px' }}>
@@ -132,7 +133,7 @@ export default function AnalyticsReport({ session, onBack }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '25px' }}>
           
           {/* Executive coach review */}
-          <div className="glass-card">
+          <div className="flat-card">
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '12px', color: 'var(--primary)' }}>
               Executive Coach Summary
             </h2>
@@ -145,7 +146,7 @@ export default function AnalyticsReport({ session, onBack }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             
             {/* Strengths Card */}
-            <div className="glass-card" style={{ borderTop: '4px solid var(--accent-green)' }}>
+            <div className="flat-card" style={{ borderTop: '4px solid var(--accent-green)' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent-green)', marginBottom: '15px' }}>
                 Key Strengths
               </h3>
@@ -157,7 +158,7 @@ export default function AnalyticsReport({ session, onBack }) {
             </div>
 
             {/* Areas of Improvement Card */}
-            <div className="glass-card" style={{ borderTop: '4px solid var(--accent-red)' }}>
+            <div className="flat-card" style={{ borderTop: '4px solid var(--accent-red)' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent-red)', marginBottom: '15px' }}>
                 Areas for Friction
               </h3>
@@ -171,7 +172,7 @@ export default function AnalyticsReport({ session, onBack }) {
           </div>
 
           {/* Actionable Training Program Panel */}
-          <div className="glass-card">
+          <div className="flat-card">
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '15px' }}>
               Actionable Coaching Tips
             </h2>
@@ -207,7 +208,7 @@ export default function AnalyticsReport({ session, onBack }) {
           </div>
 
           {/* Topic relevance assessments */}
-          <div className="glass-card">
+          <div className="flat-card">
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '15px' }}>
               Topic & Argument Quality Analysis
             </h2>
@@ -229,7 +230,7 @@ export default function AnalyticsReport({ session, onBack }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '25px' }}>
           
           {/* Key speech metrics counters */}
-          <div className="glass-card">
+          <div className="flat-card">
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '15px' }}>
               Speech Statistics
             </h2>
@@ -304,43 +305,60 @@ export default function AnalyticsReport({ session, onBack }) {
       {/* Suggested phrasing comparison section */}
       {aiEvaluation.suggestedPhrases && aiEvaluation.suggestedPhrases.length > 0 && (
         <div className="glass-card" style={{ marginTop: '30px' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <MessageSquare style={{ color: 'var(--secondary)' }} />
-            Suggested Vocabulary & Phrase Upgrades
+          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <MessageSquare style={{ color: 'var(--primary)', fill: 'var(--primary)', fillOpacity: 0.2 }} />
+            Actionable Phrase Rewrites (Before & After)
           </h2>
           
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {aiEvaluation.suggestedPhrases.map((phrase, idx) => (
               <div key={idx} style={{
-                display: 'grid',
-                gridTemplateColumns: '1.1fr 1.1fr 1fr',
-                gap: '20px',
-                padding: '16px',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'var(--bg-main)',
                 border: '1px solid var(--border-color)',
-                borderRadius: '12px',
-                alignItems: 'center',
-                flexWrap: 'wrap'
+                borderRadius: '16px',
+                overflow: 'hidden',
+                boxShadow: '0 4px 15px rgba(0,0,0,0.02)'
               }}>
-                <div style={{ borderLeft: '3px solid var(--accent-red)', paddingLeft: '12px' }}>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--accent-red)', fontWeight: 800, display: 'block', textTransform: 'uppercase', marginBottom: '2px' }}>
-                    What You Expressed
-                  </span>
-                  <p style={{ fontSize: '0.9rem', fontStyle: 'italic' }}>"{phrase.original}"</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'stretch' }}>
+                  
+                  {/* Before (Original) */}
+                  <div style={{ padding: '20px', background: 'rgba(244, 63, 94, 0.03)', borderRight: '1px dashed var(--border-color)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                      <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-red)' }} />
+                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-red)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        What You Expressed
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.95rem', fontStyle: 'italic', color: 'var(--text-muted)' }}>"{phrase.original}"</p>
+                  </div>
+
+                  {/* Divider Arrow */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 15px', background: 'var(--bg-main)', zIndex: 1, margin: '0 -20px' }}>
+                    <div style={{ background: 'white', border: '1px solid var(--border-color)', borderRadius: '50%', padding: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+                      <ArrowRight size={20} style={{ color: 'var(--primary)' }} />
+                    </div>
+                  </div>
+
+                  {/* After (Improved) */}
+                  <div style={{ padding: '20px', background: 'rgba(16, 185, 129, 0.03)', borderLeft: '1px dashed var(--border-color)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                      <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-green)' }} />
+                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-green)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        Polished Executive Phrase
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '1rem', color: 'var(--text-main)', fontWeight: 600 }}>"{phrase.improved}"</p>
+                  </div>
+
                 </div>
 
-                <div style={{ borderLeft: '3px solid var(--accent-green)', paddingLeft: '12px' }}>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--accent-green)', fontWeight: 800, display: 'block', textTransform: 'uppercase', marginBottom: '2px' }}>
-                    Polished Executive Phrase
-                  </span>
-                  <p style={{ fontSize: '0.9rem', color: 'white', fontWeight: 600 }}>"{phrase.improved}"</p>
-                </div>
-
-                <div>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 800, display: 'block', textTransform: 'uppercase', marginBottom: '2px' }}>
-                    Coaching Insight
-                  </span>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>{phrase.reason}</p>
+                {/* Reason / Insight Footer */}
+                <div style={{ background: 'rgba(139, 92, 246, 0.03)', padding: '12px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                  <Zap size={16} style={{ color: 'var(--primary)', marginTop: '2px' }} />
+                  <div>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--primary)', fontWeight: 800, textTransform: 'uppercase', display: 'block', marginBottom: '2px' }}>Coaching Insight</span>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>{phrase.reason}</p>
+                  </div>
                 </div>
               </div>
             ))}

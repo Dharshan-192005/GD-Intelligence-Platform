@@ -19,14 +19,20 @@ if (hasApiKey) {
 /**
  * Generate AI participant argument using real Gemini LLM
  */
-const generateParticipantResponse = async (topic, transcript, speakerName, personaPrompt) => {
+const generateParticipantResponse = async (topic, transcript, speakerName, personaPrompt, industryContext = 'General/Academic') => {
   if (hasApiKey && genAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-2.0-flash',
+        generationConfig: { temperature: 0.9, topP: 0.95 }
+      });
       
       const transcriptFormatted = transcript.slice(-10).map(t => `${t.speaker}: ${t.text}`).join('\n');
       
       const prompt = `You are participating in a live Group Discussion (GD) round. Your name is ${speakerName}.
+
+INDUSTRY CONTEXT: ${industryContext}
+(Adjust your vocabulary, tone, and arguments to perfectly fit this industry context. E.g., if Corporate Strategy, use business terms. If MBA Admissions, be analytical.)
 
 YOUR PERSONA:
 ${personaPrompt}
@@ -42,6 +48,7 @@ RULES:
 - React to the most recent speaker. If "User" just spoke, respond directly to their point.
 - Sound natural and human. No meta-commentary about your role.
 - Stay on topic: "${topic}". Make substantive points with real reasoning.
+- CRITICAL: DO NOT repeat previous arguments. Ensure your argument adds new perspective and is distinctly different from what others have already said.
 
 Your response:`;
 
@@ -118,6 +125,7 @@ USER METRICS:
 - Interrupted by others: ${userMetrics.interruptedCount}
 - Pacing: ${userMetrics.pacingWpm} WPM
 - Filler Words ('uh','um','like'): ${userMetrics.fillerWordCount}
+- Body Language & Visual Presence: ${userMetrics.bodyLanguageScore}/100 (Based on webcam tracking of eye-contact and posture)
 
 FULL TRANSCRIPT:
 ${transcriptFormatted}
@@ -127,9 +135,9 @@ Analyze the "User" participant ONLY. Score them HONESTLY based on what they actu
 Return a JSON object with this EXACT structure (no markdown, no code fences, just raw JSON):
 {
   "leadershipScore": <1-100, based on initiative, facilitation, consensus-building>,
-  "confidenceScore": <1-100, based on pacing, assertiveness, lack of fillers>,
+  "confidenceScore": <1-100, based on pacing, assertiveness, lack of fillers, and body language score>,
   "effectivenessScore": <1-100, based on argument quality, clarity, persuasion>,
-  "analysisSummary": "<3-4 sentence professional assessment of user's GD performance>",
+  "analysisSummary": "<3-4 sentence professional assessment of user's GD performance, MUST mention their body language if score is notable>",
   "strengths": ["<specific strength 1>", "<specific strength 2>", "<specific strength 3>"],
   "weaknesses": ["<specific weakness 1>", "<specific weakness 2>"],
   "actionableTips": ["<concrete training tip 1>", "<concrete training tip 2>", "<concrete training tip 3>"],
@@ -148,6 +156,7 @@ CRITICAL SCORING RULES:
 - If user spoke 0 seconds, ALL scores (leadership, confidence, effectiveness) MUST be 0.
 - If user spoke < 10 seconds total (but > 0), leadership ≤ 30, confidence ≤ 30, and effectiveness ≤ 40
 - If user had > 5 filler words, confidence should drop by 10-15 points  
+- If Body Language score is < 50, confidence should drop significantly
 - If user made > 3 interruptions, leadership should drop by 10 points
 - If user's arguments were surface-level or generic, effectiveness ≤ 60
 - Scores of 90+ should be RARE and only for truly outstanding performance
@@ -240,7 +249,94 @@ CRITICAL SCORING RULES:
   };
 };
 
+/**
+ * Generate GD topics based on resume
+ */
+const generateResumeTopics = async (resumeText) => {
+  if (hasApiKey && genAI) {
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      
+      const prompt = `You are an expert career coach and corporate recruiter. 
+Read the following resume text and generate 3 custom Group Discussion (GD) topics that would be perfectly suited to test this candidate's domain knowledge, strategic thinking, and industry awareness based on their background.
+
+RESUME TEXT:
+${resumeText.substring(0, 3000)}
+
+Return ONLY a JSON array of 3 strings (the 3 topics). No markdown fences, no other text.
+Example: ["Topic 1", "Topic 2", "Topic 3"]`;
+
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      let text = response.text().trim();
+      
+      if (text.startsWith('```json')) text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      else if (text.startsWith('```')) text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      
+      const topics = JSON.parse(text);
+      return Array.isArray(topics) ? topics.slice(0, 3) : [topics.toString()];
+    } catch (err) {
+      console.error('[Gemini ERROR] Resume topics generation failed:', err.message);
+    }
+  }
+
+  // Fallback
+  return [
+    "The Future of Work: Adapting to AI in Your Target Industry",
+    "Balancing Short-term Profits vs. Long-term Sustainable Growth",
+    "How Remote Work Impacts Team Dynamics and Innovation"
+  ];
+};
+
+/**
+ * Moderate discussion to check for off-topic drift
+ */
+const moderateDiscussion = async (topic, transcript) => {
+  if (hasApiKey && genAI) {
+    try {
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-2.0-flash',
+        generationConfig: { temperature: 0.2 } // lower temperature for more consistent evaluation
+      });
+      
+      const transcriptFormatted = transcript.slice(-6).map(t => `${t.speaker}: ${t.text}`).join('\n');
+      
+      const prompt = `You are an HR Moderator observing a Group Discussion.
+TOPIC: "${topic}"
+
+RECENT CONVERSATION:
+${transcriptFormatted || "(No conversation yet)"}
+
+TASK:
+Determine if the recent conversation is drifting completely off-topic from "${topic}". 
+- If it is strictly ON TOPIC, return exactly "OK".
+- If it is OFF TOPIC, act as an HR Moderator and provide a 1-sentence polite but firm verbal intervention to steer the group back. Example: "Let's bring our focus back to the core topic..."
+
+Return ONLY the text "OK" or the intervention sentence. No other text.`;
+
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      let text = response.text().trim();
+      
+      // Clean quotes
+      if (text.startsWith('"') && text.endsWith('"')) text = text.substring(1, text.length - 1);
+      
+      if (text.toUpperCase() === "OK") {
+        return null;
+      }
+      
+      console.log(`[Gemini LLM - HR Moderator Intervention] ${text}`);
+      return text;
+    } catch (err) {
+      console.error('[Gemini ERROR] Moderation failed:', err.message);
+    }
+  }
+  return null; // fallback: don't intervene if no AI or error
+};
+
 module.exports = {
   generateParticipantResponse,
-  analyzeGDSession
+  analyzeGDSession,
+  generateResumeTopics,
+  moderateDiscussion
 };

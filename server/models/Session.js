@@ -28,6 +28,10 @@ const SessionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  industryContext: {
+    type: String,
+    default: 'General/Academic'
+  },
   durationLimit: {
     type: Number, // in minutes
     required: true
@@ -35,6 +39,10 @@ const SessionSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  numParticipants: {
+    type: Number,
+    default: 4
   },
   transcript: [TranscriptSchema],
   
@@ -45,7 +53,8 @@ const SessionSchema = new mongoose.Schema({
     interruptionCount: { type: Number, default: 0 }, // number of times user interrupted others
     interruptedCount: { type: Number, default: 0 }, // number of times user got interrupted by others
     pacingWpm: { type: Number, default: 0 }, // Words per minute
-    fillerWordCount: { type: Number, default: 0 } // 'uh', 'um', 'like', etc.
+    fillerWordCount: { type: Number, default: 0 }, // 'uh', 'um', 'like', etc.
+    bodyLanguageScore: { type: Number, default: 0 } // 1-100 visual tracking
   },
   
   // Participant participation breakdown (for visual graphs)

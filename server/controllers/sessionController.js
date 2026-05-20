@@ -13,7 +13,7 @@ const generateId = () => Math.random().toString(36).substring(2, 9);
  */
 const createSession = async (req, res) => {
   try {
-    const { topic, durationLimit } = req.body;
+    const { topic, durationLimit, industryContext, numParticipants } = req.body;
     
     if (!topic || !durationLimit) {
       return res.status(400).json({ error: 'Topic and duration limit are required.' });
@@ -21,7 +21,9 @@ const createSession = async (req, res) => {
 
     const sessionData = {
       topic,
+      industryContext: industryContext || 'General/Academic',
       durationLimit,
+      numParticipants: numParticipants || 4,
       createdAt: new Date(),
       transcript: [],
       userMetrics: {
@@ -30,7 +32,8 @@ const createSession = async (req, res) => {
         interruptionCount: 0,
         interruptedCount: 0,
         pacingWpm: 0,
-        fillerWordCount: 0
+        fillerWordCount: 0,
+        bodyLanguageScore: 0
       },
       participationBreakdown: [],
       aiEvaluation: {
@@ -114,7 +117,7 @@ const getSessionById = async (req, res) => {
  */
 const getAIResponse = async (req, res) => {
   try {
-    const { topic, transcript, speakerName, personaPrompt } = req.body;
+    const { topic, transcript, speakerName, personaPrompt, industryContext } = req.body;
     
     if (!topic || !speakerName || !personaPrompt) {
       return res.status(400).json({ error: 'Missing required fields: topic, speakerName, personaPrompt.' });
@@ -124,7 +127,8 @@ const getAIResponse = async (req, res) => {
       topic,
       transcript || [],
       speakerName,
-      personaPrompt
+      personaPrompt,
+      industryContext || 'General/Academic'
     );
 
     return res.json({ text: aiSpeech });
@@ -163,7 +167,7 @@ const completeSession = async (req, res) => {
     const aiEvaluation = await geminiService.analyzeGDSession(
       session.topic,
       transcript,
-      userMetrics || { speakingTime: 0, speakPercentage: 0, interruptionCount: 0, interruptedCount: 0, pacingWpm: 0, fillerWordCount: 0 }
+      userMetrics || { speakingTime: 0, speakPercentage: 0, interruptionCount: 0, interruptedCount: 0, pacingWpm: 0, fillerWordCount: 0, bodyLanguageScore: 0 }
     );
 
     // Prepare update parameters
@@ -197,10 +201,32 @@ const completeSession = async (req, res) => {
   }
 };
 
+/**
+ * Moderate the GD session to check for off-topic discussions
+ */
+const moderateGD = async (req, res) => {
+  try {
+    const { topic, transcript } = req.body;
+    
+    if (!topic || !transcript || !Array.isArray(transcript)) {
+      return res.status(400).json({ error: 'Topic and transcript array are required.' });
+    }
+
+    const intervention = await geminiService.moderateDiscussion(topic, transcript);
+    
+    return res.json({ intervention });
+  } catch (error) {
+    console.error('Moderation Error:', error);
+    // On error, return null intervention to keep discussion going
+    return res.json({ intervention: null });
+  }
+};
+
 module.exports = {
   createSession,
   getHistory,
   getSessionById,
   getAIResponse,
-  completeSession
+  completeSession,
+  moderateGD
 };
