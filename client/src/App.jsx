@@ -1,20 +1,52 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import Dashboard from './pages/Dashboard';
 import GDArena from './pages/GDArena';
 import AnalyticsReport from './pages/AnalyticsReport';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import { Sparkles, MessageCircle, Home, LogOut, Users } from 'lucide-react';
+import { Sparkles, MessageCircle, Home, LogOut, Users, BarChart2, Settings } from 'lucide-react';
 import bgImage from './assets/bg-mountain.png';
 import './App.css';
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState('login'); // login, signup, dashboard, arena, report
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('gd_user')) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [currentPage, setCurrentPage] = useState(() => currentUser ? 'dashboard' : 'login'); // login, signup, dashboard, arena, report
   const [activeSession, setActiveSession] = useState(null);
+  const [dashboardSection, setDashboardSection] = useState('overview');
+
+  const dashboardNavItems = [
+    { id: 'overview', label: 'Overview', icon: Home },
+    { id: 'setup', label: 'Setup GD', icon: Settings },
+    { id: 'members', label: 'AI Members', icon: Users },
+    { id: 'history', label: 'History', icon: BarChart2 }
+  ];
+
+  const goToDashboardSection = (section) => {
+    setDashboardSection(section);
+    setCurrentPage('dashboard');
+  };
 
   const handleStartSession = (session) => {
     setActiveSession(session);
     setCurrentPage('arena');
+  };
+
+  const handleAuthSuccess = (user) => {
+    setCurrentUser(user);
+    setCurrentPage('dashboard');
+  };
+
+  const handleSignOut = () => {
+    localStorage.removeItem('gd_user');
+    setCurrentUser(null);
+    setActiveSession(null);
+    setCurrentPage('login');
   };
 
   const handleCompleteSession = (completedSession) => {
@@ -29,7 +61,7 @@ export default function App() {
       const data = await res.json();
       setActiveSession(data);
       setCurrentPage('report');
-    } catch (err) {
+    } catch {
       console.warn('Standalone Mode: Loading local fallback for report', sessionId);
       alert('Could not connect to the backend server to retrieve this specific report.');
     }
@@ -43,14 +75,14 @@ export default function App() {
         <main style={{ flex: 1 }}>
           {currentPage === 'login' && (
             <Login 
-              onLogin={() => setCurrentPage('dashboard')} 
+              onLogin={handleAuthSuccess} 
               onNavigateToSignup={() => setCurrentPage('signup')} 
             />
           )}
 
           {currentPage === 'signup' && (
             <Signup 
-              onSignup={() => setCurrentPage('dashboard')} 
+              onSignup={handleAuthSuccess} 
               onNavigateToLogin={() => setCurrentPage('login')} 
             />
           )}
@@ -65,23 +97,35 @@ export default function App() {
       {/* App Sidebar */}
       <div className="app-sidebar" style={{ backgroundImage: `url(${bgImage})` }}>
         <div className="app-sidebar-content">
-          <div className="logo" style={{ color: 'white', marginBottom: '50px', cursor: 'pointer' }} onClick={() => setCurrentPage('dashboard')}>
+          <div className="logo" style={{ color: 'white', marginBottom: '38px', cursor: 'pointer' }} onClick={() => goToDashboardSection('overview')}>
             <MessageCircle size={28} />
             <span>GD Intelligence</span>
           </div>
           
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <div 
-              onClick={() => setCurrentPage('dashboard')} 
-              style={{ 
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px', 
-                opacity: currentPage === 'dashboard' ? 1 : 0.6, transition: '0.2s', fontWeight: 600 
-              }}
-            >
-              <Home size={20} /> Dashboard
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.55, fontWeight: 800, margin: '0 0 8px 4px' }}>
+              Features
             </div>
+
+            {dashboardNavItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = currentPage === 'dashboard' && dashboardSection === item.id;
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => goToDashboardSection(item.id)}
+                  className={`sidebar-option ${isActive ? 'sidebar-option-active' : ''}`}
+                  type="button"
+                >
+                  <Icon size={19} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+
             {(currentPage === 'arena' || currentPage === 'report') && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#ea580c', fontWeight: 600 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#fb923c', fontWeight: 700, marginTop: '12px', padding: '12px 14px' }}>
                 <Users size={20} /> Active Session
               </div>
             )}
@@ -89,7 +133,7 @@ export default function App() {
           
           <div 
             style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '12px', opacity: 0.6, cursor: 'pointer', fontWeight: 500 }} 
-            onClick={() => setCurrentPage('login')}
+            onClick={handleSignOut}
           >
             <LogOut size={20} /> Sign Out
           </div>
@@ -125,6 +169,10 @@ export default function App() {
                 <Sparkles size={14} /> COACH EVALUATION
               </div>
             )}
+
+            {currentUser && currentPage === 'dashboard' && (
+              <span className="badge badge-success">{currentUser.name}</span>
+            )}
           </div>
         </nav>
 
@@ -134,6 +182,8 @@ export default function App() {
             <Dashboard
               onStartSession={handleStartSession}
               onViewReport={handleViewReport}
+              activeSection={dashboardSection}
+              onChangeSection={setDashboardSection}
             />
           )}
           

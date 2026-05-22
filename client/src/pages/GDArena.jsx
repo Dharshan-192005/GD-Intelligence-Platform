@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, AlertTriangle, ArrowRight, ShieldAlert, Camera, CameraOff } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, ShieldAlert, Camera, CameraOff } from 'lucide-react';
 import Webcam from 'react-webcam';
 import { io } from 'socket.io-client';
 
@@ -9,6 +9,46 @@ const AI_MEMBERS = [
   { name: 'Leo', role: 'The Harmonizer', color: '#10b981', initialIntro: 'It is wonderful to be discussing this. Let\'s remember to hear everyone out and try to find a collaborative balance.', prompt: 'You are encouraging, supportive, bridge opposing ideas, and summarize points to build consensus.' },
   { name: 'Kabir', role: 'The Skeptic', color: '#f59e0b', initialIntro: 'Before we jump to conclusions, I want to challenge the core assumption we are basing this whole premise on.', prompt: 'You play devil\'s advocate, raise doubts, question assertions, and demand logical backing.' }
 ];
+
+const scoreLocalContribution = (transcript, userMetrics) => {
+  const userText = transcript
+    .filter(t => t.speaker === 'User')
+    .map(t => t.text || '')
+    .join(' ')
+    .toLowerCase()
+    .replace(/\[interrupted\]/g, ' ')
+    .trim();
+  const words = userText.match(/[a-z0-9']+/g) || [];
+  const uniqueWords = new Set(words);
+  const lowValueWords = new Set(['ok', 'okay', 'yes', 'yeah', 'no', 'hmm', 'fine', 'right', 'true']);
+  const meaningfulWords = words.filter(word => !lowValueWords.has(word));
+  const repeatedLowEffort = words.length > 0 && meaningfulWords.length <= 2 && uniqueWords.size <= 3;
+  const isVeryWeak = words.length < 12 || repeatedLowEffort || meaningfulWords.length < 6;
+
+  if (userMetrics.speakingTime === 0 || words.length === 0) {
+    return { leadership: 0, confidence: 0, effectiveness: 0, isVeryWeak, repeatedLowEffort };
+  }
+
+  if (repeatedLowEffort) {
+    return { leadership: 12, confidence: 18, effectiveness: 10, isVeryWeak, repeatedLowEffort };
+  }
+
+  if (isVeryWeak || userMetrics.speakingTime < 10) {
+    return { leadership: 28, confidence: 32, effectiveness: 25, isVeryWeak, repeatedLowEffort };
+  }
+
+  const pacingPenalty = userMetrics.pacingWpm < 90 || userMetrics.pacingWpm > 160 ? 10 : 0;
+  const interruptionPenalty = Math.min(userMetrics.interruptionCount * 4, 16);
+  const fillerPenalty = Math.min(userMetrics.fillerWordCount * 3, 18);
+
+  return {
+    leadership: Math.max(35, Math.min(82, 58 + userMetrics.speakPercentage / 3 - interruptionPenalty)),
+    confidence: Math.max(35, Math.min(84, 68 - pacingPenalty - fillerPenalty)),
+    effectiveness: Math.max(32, Math.min(86, 55 + Math.min(meaningfulWords.length, 40) / 2)),
+    isVeryWeak,
+    repeatedLowEffort
+  };
+};
 
 export default function GDArena({ session, onComplete }) {
   const activeAIMembers = AI_MEMBERS.slice(0, session.numParticipants || 4);
@@ -24,11 +64,20 @@ export default function GDArena({ session, onComplete }) {
   // Real-time quantitative calculations
   const [userSpeakingTime, setUserSpeakingTime] = useState(0);
   const [userInterruptionCount, setUserInterruptionCount] = useState(0);
-  const [userInterruptedCount, setUserInterruptedCount] = useState(0);
+  const [userInterruptedCount] = useState(0);
   const [fillerWordsCount, setFillerWordsCount] = useState(0);
   const [aiSpeakingTimes, setAiSpeakingTimes] = useState({ Sam: 0, Meera: 0, Leo: 0, Kabir: 0 });
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [bodyLanguageScore, setBodyLanguageScore] = useState(85);
+  const [liveAnalysis, setLiveAnalysis] = useState({
+    summary: 'Waiting for your first contribution.',
+    relevanceScore: 0,
+    clarityScore: 0,
+    nextMove: 'Join the discussion with a clear point, example, and link back to the topic.',
+    rateLimit: null
+  });
+  const [isLiveAnalysisLoading, setIsLiveAnalysisLoading] = useState(false);
+  const [aiRateStatus, setAiRateStatus] = useState(null);
 
   // Web Speech references
   const recognitionRef = useRef(null);
@@ -39,6 +88,10 @@ export default function GDArena({ session, onComplete }) {
   const autoSpeechQueueRef = useRef(null);
   const trackingTimerRef = useRef(null);
   const socketRef = useRef(null);
+  const aiResponseInFlightRef = useRef(false);
+  const lastModerationTurnRef = useRef(0);
+  const lastLiveAnalysisAtRef = useRef(0);
+  const lastLiveAnalysisTurnRef = useRef(0);
 
   // Auto scroll transcript panel
   const transcriptEndRef = useRef(null);
@@ -59,7 +112,25 @@ export default function GDArena({ session, onComplete }) {
       clearInterval(activeAITimerRef.current);
       clearTimeout(autoSpeechQueueRef.current);
       clearInterval(trackingTimerRef.current);
+      aiResponseInFlightRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const fetchAIStatus = async () => {
+      try {
+        const res = await fetch('http://localhost:5000/api/sessions/ai/status');
+        if (res.ok) {
+          setAiRateStatus(await res.json());
+        }
+      } catch {
+        setAiRateStatus(null);
+      }
+    };
+
+    fetchAIStatus();
+    const statusTimer = setInterval(fetchAIStatus, 15000);
+    return () => clearInterval(statusTimer);
   }, []);
 
   // Socket.io initialization
@@ -295,13 +366,75 @@ export default function GDArena({ session, onComplete }) {
     });
   };
 
+  const buildCurrentUserMetrics = (nextTranscript = transcript) => {
+    const totalSpeaks = userSpeakingTime + Object.values(aiSpeakingTimes).reduce((a, b) => a + b, 0);
+    const userPct = totalSpeaks > 0 ? Math.round((userSpeakingTime / totalSpeaks) * 100) : 0;
+    const userWords = nextTranscript
+      .filter(t => t.speaker === 'User')
+      .map(t => t.text.split(/\s+/).filter(Boolean).length)
+      .reduce((a, b) => a + b, 0);
+
+    return {
+      speakingTime: userSpeakingTime,
+      speakPercentage: userPct,
+      interruptionCount: userInterruptionCount,
+      interruptedCount: userInterruptedCount,
+      pacingWpm: userSpeakingTime > 0 ? Math.round((userWords / userSpeakingTime) * 60) : 0,
+      fillerWordCount: fillerWordsCount,
+      bodyLanguageScore: isVideoActive ? bodyLanguageScore : 0
+    };
+  };
+
+  const requestLiveAnalysis = async (nextTranscript) => {
+    const userTurns = nextTranscript.filter(t => t.speaker === 'User').length;
+    const now = Date.now();
+
+    if (userTurns === 0) return;
+    if (userTurns === lastLiveAnalysisTurnRef.current) return;
+    if (now - lastLiveAnalysisAtRef.current < 20000 && userTurns < lastLiveAnalysisTurnRef.current + 2) return;
+
+    lastLiveAnalysisTurnRef.current = userTurns;
+    lastLiveAnalysisAtRef.current = now;
+    setIsLiveAnalysisLoading(true);
+
+    try {
+      const res = await fetch('http://localhost:5000/api/sessions/live-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: session.topic,
+          transcript: nextTranscript.map(t => ({ speaker: t.speaker, text: t.text })),
+          userMetrics: buildCurrentUserMetrics(nextTranscript)
+        })
+      });
+
+      if (!res.ok) throw new Error('Live analysis unavailable');
+      const data = await res.json();
+      setLiveAnalysis(data);
+      if (data.rateLimit) setAiRateStatus(data.rateLimit);
+    } catch (err) {
+      console.warn('Live analysis fallback:', err.message);
+      setLiveAnalysis(prev => ({
+        ...prev,
+        summary: 'Local metrics updated. Keep your next point concise and evidence-backed.',
+        nextMove: 'Use: I agree/disagree because... For example... Therefore...'
+      }));
+    } finally {
+      setIsLiveAnalysisLoading(false);
+    }
+  };
+
   // Selects which AI participant speaks next based on current transcript context
   const triggerNextAISpeaker = async () => {
     if (discussionState !== 'ongoing') return;
+    if (aiResponseInFlightRef.current) return;
+
+    aiResponseInFlightRef.current = true;
     
     // MODERATION CHECK: Evaluate drift every 4 turns
-    if (transcript.length > 0 && transcript.length % 4 === 0) {
+    if (transcript.length >= 6 && transcript.length - lastModerationTurnRef.current >= 6) {
       try {
+        lastModerationTurnRef.current = transcript.length;
         const res = await fetch(`http://localhost:5000/api/sessions/moderate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -312,6 +445,7 @@ export default function GDArena({ session, onComplete }) {
           if (data.intervention) {
             // HR Moderator intervenes
             triggerAISpeech('HR Moderator', data.intervention);
+            aiResponseInFlightRef.current = false;
             return; // Stop the regular AI from speaking this turn
           }
         }
@@ -355,8 +489,9 @@ export default function GDArena({ session, onComplete }) {
       // Make sure we didn't transition state during loading
       if (discussionState === 'ongoing') {
         triggerAISpeech(nextAI.name, data.text);
+        if (data.rateLimit) setAiRateStatus(data.rateLimit);
       }
-    } catch (err) {
+    } catch {
       console.warn('Offline response generation fallback for', nextAI.name);
       // fallback local content
       if (discussionState === 'ongoing') {
@@ -368,6 +503,8 @@ export default function GDArena({ session, onComplete }) {
         const randomPhrase = fallbacks[Math.floor(Math.random() * fallbacks.length)];
         triggerAISpeech(nextAI.name, randomPhrase);
       }
+    } finally {
+      aiResponseInFlightRef.current = false;
     }
   };
 
@@ -413,8 +550,18 @@ export default function GDArena({ session, onComplete }) {
       setFillerWordsCount(prev => prev + detectedFillers);
     }
 
+    const userMessage = {
+      id: Date.now() + Math.random(),
+      speaker: 'User',
+      text,
+      timestamp: new Date(),
+      isInterrupted: didInterrupt
+    };
+    const nextTranscript = [...transcript, userMessage];
+
     appendTranscript('User', text, didInterrupt);
     setActiveSpeaker('User');
+    requestLiveAnalysis(nextTranscript);
 
     // Give user the floor for a short silence detection
     clearTimeout(autoSpeechQueueRef.current);
@@ -461,7 +608,6 @@ export default function GDArena({ session, onComplete }) {
     clearTimeout(autoSpeechQueueRef.current);
 
     // Calculate final metrics
-    const totalDiscussionTime = session.durationLimit * 60 - timeLeft || 1;
     const totalSpeaks = userSpeakingTime + Object.values(aiSpeakingTimes).reduce((a, b) => a + b, 0);
     const userPct = totalSpeaks > 0 ? Math.round((userSpeakingTime / totalSpeaks) * 100) : 0;
     
@@ -519,8 +665,7 @@ export default function GDArena({ session, onComplete }) {
       
       // Fallback sandbox: mock local analytics generation in 3s
       setTimeout(() => {
-        // Mock a finished session structured data
-        const mockScore = Math.max(50, Math.min(95, 75 - (fillerWordsCount * 2) + (userSpeakingTime > 30 ? 10 : -10)));
+        const localScore = scoreLocalContribution(transcript, userMetrics);
         onComplete({
           _id: session._id,
           topic: session.topic,
@@ -530,20 +675,22 @@ export default function GDArena({ session, onComplete }) {
           userMetrics,
           participationBreakdown,
           aiEvaluation: {
-            leadershipScore: Math.round(mockScore * 0.9),
-            confidenceScore: Math.round(mockScore * 0.95),
-            effectivenessScore: Math.round(mockScore),
-            analysisSummary: "This is a detailed local sandbox assessment. You demonstrated strong engagement and presented clear logical statements during the discussion. Practicing structuring your arguments in a standard executive flow and keeping your speech pacing measured will help elevate your effectiveness.",
-            strengths: ["Highly logical argument structure.", "Active engagement in challenging opposing views."],
-            weaknesses: ["Occasional stuttering and high pacing during critical transitions.", "Missed summarizing mutual agreements."],
-            actionableTips: ["Aim to speak at a slower, measured speed of 120 WPM.", "Leverage transitions to bridge ideas."],
-            topicRelevance: "Your arguments stayed directly relevant to the core issues.",
-            argumentDepth: "Moderate depth. Aim to introduce structured statistics or real-world precedents.",
+            leadershipScore: Math.round(localScore.leadership),
+            confidenceScore: Math.round(localScore.confidence),
+            effectivenessScore: Math.round(localScore.effectiveness),
+            analysisSummary: localScore.isVeryWeak
+              ? "This local fallback assessment capped the score because the contribution was too brief or repetitive to demonstrate meaningful GD performance. A strong answer needs a claim, reasoning, example, and a link back to the topic."
+              : "This local fallback assessment reviewed your speaking time, pacing, interruptions, and visible structure. Connect the backend to Gemini for deeper semantic coaching.",
+            strengths: localScore.isVeryWeak ? ["Attempted to participate in the discussion."] : ["Participated with enough detail for basic scoring.", "Maintained topic engagement."],
+            weaknesses: localScore.isVeryWeak ? ["Contribution lacked a clear claim, reason, example, or conclusion.", "Very short responses cannot demonstrate leadership or argument depth."] : ["Arguments could include more concrete evidence.", "Transitions between points can be sharper."],
+            actionableTips: ["Use CRPE: Claim, Reason, Proof, Effect.", "Avoid one-word acknowledgements; add a complete argument.", "Reference another speaker before adding your own point."],
+            topicRelevance: localScore.repeatedLowEffort ? "No meaningful topic relevance was demonstrated." : "Local analysis found basic topic participation.",
+            argumentDepth: localScore.isVeryWeak ? "Very low argument depth; the response was mostly acknowledgement." : "Moderate depth. Add examples, data, or real-world consequences.",
             suggestedPhrases: [
               {
-                original: "I think this is a serious threat for workers.",
-                improved: "Frictional unemployment represents a structural market shock that requires institutionalized retraining frameworks.",
-                reason: "Replaces general anxiety language with technical market terms."
+                original: transcript.find(t => t.speaker === 'User')?.text || "ok",
+                improved: "I believe AI will reshape employment because routine tasks may be automated, but it can also create new roles if workers receive structured reskilling support.",
+                reason: "Turns a weak acknowledgement into a clear claim with reasoning and balance."
               }
             ]
           }
@@ -610,7 +757,7 @@ export default function GDArena({ session, onComplete }) {
   }
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '30px 20px' }}>
+    <div className="arena-shell">
       
       {/* Interruption Overlay alert */}
       {interruptionAlert && (
@@ -637,23 +784,15 @@ export default function GDArena({ session, onComplete }) {
       )}
 
       {/* Header Info Panel */}
-      <div className="flat-card" style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '16px 24px',
-        marginBottom: '25px',
-        gap: '20px',
-        flexWrap: 'wrap'
-      }}>
+      <div className="flat-card arena-header">
         <div style={{ flex: 1 }}>
           <span className="badge badge-primary" style={{ marginBottom: '4px', display: 'inline-block' }}>
             Live Discussion
           </span>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'white' }}>{session.topic}</h2>
+          <h2>{session.topic}</h2>
         </div>
         
-        <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+        <div className="arena-controls">
           
           {/* Webcam Toggle */}
           <button
@@ -717,7 +856,54 @@ export default function GDArena({ session, onComplete }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '30px', alignItems: 'start' }}>
+      <div className="live-coach-grid">
+        <div className="flat-card metric-card-compact">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)', fontWeight: 800, fontSize: '0.82rem', marginBottom: '8px' }}>
+            <RefreshCw size={15} className={isLiveAnalysisLoading ? 'spinning-icon' : ''} />
+            LIVE COACH
+          </div>
+          <p style={{ fontSize: '0.92rem', lineHeight: 1.45 }}>{liveAnalysis.summary}</p>
+          <div style={{ marginTop: '10px', fontSize: '0.82rem', color: 'var(--text-main)', fontWeight: 650 }}>
+            Next: {liveAnalysis.nextMove}
+          </div>
+        </div>
+
+        <div className="flat-card metric-card-compact">
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 800, marginBottom: '10px' }}>REAL-TIME QUALITY</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700 }}>RELEVANCE</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--accent-green)' }}>{liveAnalysis.relevanceScore || 0}%</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700 }}>CLARITY</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--secondary)' }}>{liveAnalysis.clarityScore || 0}%</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flat-card metric-card-compact">
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 800, marginBottom: '10px' }}>GEMINI FREE-TIER GUARD</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline' }}>
+            <div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--primary)' }}>
+                {aiRateStatus ? `${aiRateStatus.callsInLastMinute}/${aiRateStatus.rpmLimit}` : 'Local'}
+              </div>
+              <p style={{ fontSize: '0.8rem' }}>requests in the last minute</p>
+            </div>
+            <span className={aiRateStatus?.enabled ? 'badge badge-success' : 'badge badge-danger'}>
+              {aiRateStatus?.enabled ? aiRateStatus.model : 'Fallback'}
+            </span>
+          </div>
+          {aiRateStatus && (
+            <div className="quota-meter" style={{ '--meter-width': `${Math.min(100, Math.round((aiRateStatus.callsInLastMinute / Math.max(aiRateStatus.rpmLimit, 1)) * 100))}%`, marginTop: '12px' }}>
+              <span />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="arena-grid">
         
         {/* Arena round table simulator visual */}
         <div className="flat-card" style={{
@@ -747,7 +933,7 @@ export default function GDArena({ session, onComplete }) {
             width: '280px',
             height: '280px',
             borderRadius: '50%',
-            background: 'radial-gradient(circle, rgba(13,16,27,0.8) 0%, rgba(6,7,10,0.5) 100%)',
+            background: 'radial-gradient(circle, rgba(15,118,110,0.18) 0%, rgba(38,50,65,0.95) 72%)',
             border: '8px solid rgba(255,255,255,0.03)',
             boxShadow: 'inset 0 0 30px rgba(0,0,0,0.8), 0 0 30px rgba(139,92,246,0.05)',
             display: 'flex',

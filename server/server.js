@@ -7,9 +7,12 @@ const {
   getHistory,
   getSessionById,
   getAIResponse,
+  getLiveAnalysis,
+  getAIStatus,
   completeSession,
   moderateGD
 } = require('./controllers/sessionController');
+const { signup, login } = require('./controllers/authController');
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -35,9 +38,6 @@ app.use(cors({
 // Body-parsing middleware
 app.use(express.json());
 
-// Initialize Database Connection
-connectDB();
-
 // Global health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -52,10 +52,15 @@ const topicRoutes = require('./routes/topicRoutes');
 
 app.use('/api/topics', topicRoutes);
 
+app.post('/api/auth/signup', signup);
+app.post('/api/auth/login', login);
+
 app.post('/api/sessions', createSession);
 app.get('/api/sessions/history', getHistory);
 app.post('/api/sessions/moderate', moderateGD);
 app.post('/api/sessions/generate-response', getAIResponse);
+app.post('/api/sessions/live-analysis', getLiveAnalysis);
+app.get('/api/sessions/ai/status', getAIStatus);
 app.get('/api/sessions/:id', getSessionById);
 app.post('/api/sessions/:id/complete', completeSession);
 
@@ -92,10 +97,16 @@ io.on('connection', (socket) => {
   });
 });
 
-// Start Express Server
-server.listen(PORT, () => {
+// Start Express Server after database mode is known.
+const startServer = async () => {
+  await connectDB();
+
+  server.listen(PORT, () => {
   console.log(`===================================================`);
   console.log(`🚀 Group Discussion Intelligence Server started on port ${PORT}`);
   console.log(`📌 Health check available at: http://localhost:${PORT}/api/health`);
   console.log(`===================================================`);
-});
+  });
+};
+
+startServer();

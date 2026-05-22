@@ -1,14 +1,35 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import AuthLayout from './AuthLayout';
 
 export default function Login({ onLogin, onNavigateToSignup }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (email && password) {
-      onLogin();
+    setError('');
+
+    try {
+      setIsSubmitting(true);
+      const res = await fetch('http://localhost:5000/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Could not sign in.');
+      }
+
+      localStorage.setItem('gd_user', JSON.stringify(data.user));
+      onLogin(data.user);
+    } catch (err) {
+      setError(err.message || 'Could not sign in. Please check the backend server.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -19,6 +40,12 @@ export default function Login({ onLogin, onNavigateToSignup }) {
       </div>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {error && (
+          <div style={{ background: 'rgba(220, 38, 38, 0.08)', border: '1px solid rgba(220, 38, 38, 0.22)', color: '#b91c1c', borderRadius: '8px', padding: '10px 12px', fontSize: '0.86rem' }}>
+            {error}
+          </div>
+        )}
+
         <div>
           <label style={{ display: 'block', fontSize: '0.85rem', color: '#4b5563', marginBottom: '8px', fontWeight: 500 }}>
             Email Address
@@ -57,17 +84,18 @@ export default function Login({ onLogin, onNavigateToSignup }) {
           className="btn-primary" 
           style={{ 
             marginTop: '8px', 
-            background: '#ea580c', // Orange brand color from the image
-            boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)' 
+            background: 'var(--primary)',
+            boxShadow: '0 4px 12px rgba(15, 118, 110, 0.22)' 
           }}
           onMouseOver={(e) => {
-            e.currentTarget.style.background = '#c2410c';
+            e.currentTarget.style.background = '#115e59';
           }}
           onMouseOut={(e) => {
-            e.currentTarget.style.background = '#ea580c';
+            e.currentTarget.style.background = 'var(--primary)';
           }}
+          disabled={isSubmitting}
         >
-          Sign in now
+          {isSubmitting ? 'Signing in...' : 'Sign in now'}
         </button>
 
         <div style={{ textAlign: 'center', marginTop: '8px' }}>
@@ -80,7 +108,7 @@ export default function Login({ onLogin, onNavigateToSignup }) {
           Don't have an account?{' '}
           <span 
             onClick={onNavigateToSignup} 
-            style={{ color: '#ea580c', cursor: 'pointer', fontWeight: 600 }}
+            style={{ color: 'var(--primary)', cursor: 'pointer', fontWeight: 600 }}
           >
             Sign up
           </span>

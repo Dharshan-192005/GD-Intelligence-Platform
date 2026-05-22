@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Play, Sparkles, BookOpen, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Play, Sparkles, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw, Settings, Home } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 
 const SUGGESTED_TOPICS = [
@@ -24,17 +24,42 @@ const INDUSTRY_CONTEXTS = [
   "Creative Agency"
 ];
 
-export default function Dashboard({ onStartSession, onViewReport }) {
+const REAL_GD_FEATURES = [
+  {
+    title: "Turn-Based Live Dialogue",
+    description: "AI members wait, respond to the latest point, and avoid duplicate replies.",
+    status: "Active",
+    icon: Users
+  },
+  {
+    title: "Free-Tier Guard",
+    description: "Gemini calls are queued and spaced with a configurable RPM limit.",
+    status: "Protected",
+    icon: RefreshCw
+  },
+  {
+    title: "Live Quality Coach",
+    description: "Relevance, clarity, and next-move feedback update during the round.",
+    status: "Realtime",
+    icon: Sparkles
+  },
+  {
+    title: "Final Executive Report",
+    description: "Full-session transcript analysis runs once after the GD ends.",
+    status: "On finish",
+    icon: BarChart2
+  }
+];
+
+export default function Dashboard({ onStartSession, onViewReport, activeSection = 'overview', onChangeSection }) {
   const [topic, setTopic] = useState(SUGGESTED_TOPICS[0]);
   const [industryContext, setIndustryContext] = useState(INDUSTRY_CONTEXTS[0]);
-  const [duration, setDuration] = useState(2); // default 2 minutes for testing
+  const [duration, setDuration] = useState(2);
   const [numParticipants, setNumParticipants] = useState(4);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  // Resume upload state
   const [resumeTopics, setResumeTopics] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -44,7 +69,15 @@ export default function Dashboard({ onStartSession, onViewReport }) {
     fetchHistory();
   }, []);
 
-  const fetchHistory = async () => {
+  const activeParticipants = useMemo(() => PARTICIPANTS.slice(0, numParticipants), [numParticipants]);
+  const completedRuns = history.filter((item) => item.aiEvaluation);
+  const latestScore = completedRuns.length
+    ? Math.round(completedRuns.reduce((total, item) => {
+        return total + item.aiEvaluation.leadershipScore + item.aiEvaluation.confidenceScore + item.aiEvaluation.effectivenessScore;
+      }, 0) / (completedRuns.length * 3))
+    : 0;
+
+  async function fetchHistory() {
     try {
       setLoading(true);
       setError(null);
@@ -58,7 +91,7 @@ export default function Dashboard({ onStartSession, onViewReport }) {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const handleResumeUpload = async (e) => {
     const file = e.target.files[0];
@@ -78,14 +111,10 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       if (!res.ok) throw new Error('Failed to generate topics from resume');
       const data = await res.json();
       setResumeTopics(data.topics);
-      if (data.topics && data.topics.length > 0) {
-        setTopic(data.topics[0]); // Auto-select first custom topic
-      }
+      if (data.topics && data.topics.length > 0) setTopic(data.topics[0]);
     } catch (err) {
       console.error('Resume upload error:', err);
       setUploadError('Failed to generate AI topics from resume.');
-      
-      // Standalone sandbox fallback
       const mockTopics = [
         "Analyzing Your Core Competencies Against Market Trends",
         "Strategic Pivots: Bridging Your Past Experience to Future Tech",
@@ -95,7 +124,6 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       setTopic(mockTopics[0]);
     } finally {
       setIsUploading(false);
-      // Reset input so the same file can be uploaded again if needed
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -117,7 +145,6 @@ export default function Dashboard({ onStartSession, onViewReport }) {
       onStartSession(session);
     } catch (err) {
       console.error(err);
-      // Resilient Client Sandbox: Create a mock session directly if backend fails to respond
       const mockSession = {
         _id: 'mock_' + Math.random().toString(36).substring(2, 9),
         topic,
@@ -137,19 +164,374 @@ export default function Dashboard({ onStartSession, onViewReport }) {
     }
   };
 
-  return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '40px 20px' }}>
-      
-      {/* Welcome Banner */}
-      <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-        <h1 style={{ fontSize: '3rem', fontWeight: 800, marginBottom: '10px' }}>
-          Group Discussion Intelligence Platform
-        </h1>
-        <p style={{ fontSize: '1.2rem', color: 'var(--text-muted)', maxWidth: '700px', margin: '0 auto' }}>
-          Practice competitive group discussions against diverse, interactive AI personas. Get real-time speech analytics, interruption metrics, and executive communication coaching.
+  const SectionHeader = ({ icon: Icon, title, description, action }) => (
+    <div className="dashboard-section-header">
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--primary)', fontWeight: 800, marginBottom: '6px' }}>
+          <Icon size={22} />
+          <span style={{ fontSize: '0.78rem', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Dashboard Feature</span>
+        </div>
+        <h1>{title}</h1>
+        <p>{description}</p>
+      </div>
+      {action}
+    </div>
+  );
+
+  const renderTopicButtons = (items, type) => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+      {items.map((item, idx) => {
+        const isSelected = topic === item;
+        const selectedColor = type === 'resume' ? 'var(--accent-green)' : 'var(--primary)';
+
+        return (
+          <button
+            key={`${type}-${idx}`}
+            type="button"
+            onClick={() => setTopic(item)}
+            style={{
+              background: isSelected ? `${selectedColor}15` : '#ffffff',
+              border: isSelected ? `1px solid ${selectedColor}` : '1px solid var(--border-color)',
+              color: isSelected ? selectedColor : 'var(--text-muted)',
+              padding: '8px 12px',
+              borderRadius: '8px',
+              fontSize: '0.85rem',
+              cursor: 'pointer',
+              transition: 'var(--transition-smooth)',
+              textAlign: 'left'
+            }}
+          >
+            {type === 'resume' && <FileText size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: 'text-top' }} />}
+            {item}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderSetup = () => (
+    <>
+      <SectionHeader
+        icon={Settings}
+        title="Configure Discussion"
+        description="Choose the topic, context, group size, and round duration before entering the virtual GD room."
+      />
+
+      <div className="two-column-panel">
+        <div className="flat-card">
+          <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>DISCUSSION TOPIC</label>
+              <input
+                className="input-field"
+                type="text"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder="Enter custom discussion topic..."
+                required
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)' }}>TRENDING TOPICS</span>
+              {renderTopicButtons(SUGGESTED_TOPICS, 'suggested')}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Sparkles size={14} /> AI TOPICS FROM RESUME
+                </span>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  className="btn-secondary"
+                  style={{ padding: '8px 12px', fontSize: '0.82rem', borderRadius: '8px' }}
+                >
+                  {isUploading ? <><span className="spinning-icon"><RefreshCw size={14} /></span> Analyzing...</> : <><Upload size={14} /> Upload Resume</>}
+                </button>
+                <input type="file" accept=".pdf,.txt" ref={fileInputRef} style={{ display: 'none' }} onChange={handleResumeUpload} />
+              </div>
+              {uploadError && <div style={{ fontSize: '0.8rem', color: 'var(--accent-red)' }}>{uploadError}</div>}
+              {resumeTopics.length > 0 && renderTopicButtons(resumeTopics, 'resume')}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>INDUSTRY CONTEXT</label>
+              <select className="input-field" value={industryContext} onChange={(e) => setIndustryContext(e.target.value)}>
+                {INDUSTRY_CONTEXTS.map((ctx) => <option key={ctx} value={ctx}>{ctx}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>AI PARTICIPANTS</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {[2, 3, 4].map((num) => (
+                    <button key={num} type="button" onClick={() => setNumParticipants(num)} className={numParticipants === num ? 'btn-primary' : 'btn-secondary'} style={{ padding: '10px', borderRadius: '8px' }}>
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>DURATION</label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {[2, 5, 10].map((m) => (
+                    <button key={m} type="button" onClick={() => setDuration(m)} className={duration === m ? 'btn-primary' : 'btn-secondary'} style={{ padding: '10px', borderRadius: '8px' }}>
+                      {m}m
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button type="submit" disabled={isSubmitting} className="btn-primary" style={{ width: '100%', padding: '16px', fontSize: '1.05rem' }}>
+              <Play fill="white" size={18} />
+              {isSubmitting ? 'Starting...' : 'Enter Virtual GD Round'}
+            </button>
+          </form>
+        </div>
+
+        <div className="flat-card" style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          <div>
+            <h2 style={{ fontSize: '1.25rem' }}>Current Round</h2>
+            <p style={{ marginTop: '4px' }}>{topic}</p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div className="flat-card" style={{ padding: '16px', borderRadius: '8px' }}>
+              <Users size={20} color="var(--primary)" />
+              <h3 style={{ marginTop: '8px' }}>{numParticipants} AI</h3>
+              <p style={{ fontSize: '0.86rem' }}>{industryContext}</p>
+            </div>
+            <div className="flat-card" style={{ padding: '16px', borderRadius: '8px' }}>
+              <Clock size={20} color="var(--primary)" />
+              <h3 style={{ marginTop: '8px' }}>{duration} min</h3>
+              <p style={{ fontSize: '0.86rem' }}>Timed round</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+
+  const renderMembers = () => (
+    <>
+      <SectionHeader
+        icon={Users}
+        title="AI Group Members"
+        description="Review the personas that will challenge your structure, pace, confidence, and conflict handling."
+        action={<button className="btn-primary" type="button" onClick={() => onChangeSection?.('setup')}><Settings size={16} /> Configure Round</button>}
+      />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
+        {activeParticipants.map((participant) => (
+          <div key={participant.name} className="flat-card" style={{ borderLeft: `4px solid ${participant.color}` }}>
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+              <div style={{
+                width: '46px',
+                height: '46px',
+                borderRadius: '50%',
+                background: participant.color,
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 800,
+                fontSize: '1.2rem',
+                boxShadow: `0 0 12px ${participant.color}44`
+              }}>
+                {participant.name[0]}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
+                  <h3>{participant.name}</h3>
+                  <span className="badge" style={{ background: `${participant.color}15`, color: participant.color, border: `1px solid ${participant.color}33`, fontSize: '0.68rem' }}>{participant.role}</span>
+                </div>
+                <p style={{ fontSize: '0.9rem', lineHeight: 1.5 }}>{participant.desc}</p>
+                <div style={{ marginTop: '14px', color: participant.color, fontWeight: 700, fontSize: '0.84rem' }}>{participant.style}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  const renderHistory = () => (
+    <>
+      <SectionHeader
+        icon={BarChart2}
+        title="Discussion Intelligence History"
+        description="Track previous rounds, coaching scores, and performance trends from completed sessions."
+        action={<button className="btn-secondary" type="button" onClick={fetchHistory}><RefreshCw size={16} /> Refresh</button>}
+      />
+
+      {loading ? (
+        <div className="flat-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading historical performance...</div>
+      ) : history.length === 0 ? (
+        <div className="flat-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+          <Calendar size={40} style={{ margin: '0 auto 10px', opacity: 0.35 }} />
+          <p>No group discussions found. Complete your first practice round from Setup GD.</p>
+        </div>
+      ) : (
+        <>
+          <div className="flat-card" style={{ marginBottom: '24px', padding: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
+              <TrendingUp style={{ color: 'var(--primary)' }} size={20} />
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Performance Over Time</h3>
+            </div>
+            <div style={{ height: '260px', width: '100%' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={[...history].reverse().filter((h) => h.aiEvaluation).map((h, i) => ({
+                  name: `S${i + 1}`,
+                  Leadership: h.aiEvaluation.leadershipScore,
+                  Confidence: h.aiEvaluation.confidenceScore,
+                  Effectiveness: h.aiEvaluation.effectivenessScore
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.08)" vertical={false} />
+                  <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} />
+                  <Tooltip contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '8px' }} />
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: '0.8rem', paddingTop: '10px' }} />
+                  <Line type="monotone" dataKey="Leadership" stroke="#c084fc" strokeWidth={3} dot={{ r: 4, fill: '#c084fc', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                  <Line type="monotone" dataKey="Confidence" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4, fill: '#22d3ee', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                  <Line type="monotone" dataKey="Effectiveness" stroke="#34d399" strokeWidth={3} dot={{ r: 4, fill: '#34d399', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: '14px' }}>
+            {history.map((item) => {
+              const score = item.aiEvaluation
+                ? Math.round((item.aiEvaluation.leadershipScore + item.aiEvaluation.confidenceScore + item.aiEvaluation.effectivenessScore) / 3)
+                : 0;
+
+              return (
+                <div key={item._id} className="flat-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', gap: '20px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '250px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                      <span className="badge badge-primary">{item.durationLimit} min round</span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        {new Date(item.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </span>
+                    </div>
+                    <h3 style={{ fontSize: '1.08rem', fontWeight: 700 }}>{item.topic}</h3>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700 }}>OVERALL</div>
+                      <div style={{ fontSize: '1.3rem', fontWeight: 800, color: score > 75 ? 'var(--accent-green)' : 'var(--accent-yellow)' }}>
+                        {score ? `${score}%` : 'Pending'}
+                      </div>
+                    </div>
+                    <button onClick={() => onViewReport(item._id)} className="btn-secondary" style={{ padding: '8px 16px', fontSize: '0.9rem', borderRadius: '8px' }}>
+                      View Coaching
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  const renderOverview = () => (
+    <>
+      <div className="dashboard-hero">
+        <h1>Group Discussion Intelligence Platform</h1>
+        <p>
+          Practice competitive group discussions against diverse AI personas, then review speech analytics,
+          interruption patterns, and executive communication coaching.
         </p>
       </div>
 
+      <div className="feature-grid">
+        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('setup')}>
+          <Settings color="var(--primary)" />
+          <h3>Setup GD</h3>
+          <p>Create a topic, choose context, set duration, and start the round.</p>
+        </button>
+        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('members')}>
+          <Users color="var(--secondary)" />
+          <h3>AI Members</h3>
+          <p>See the different discussion personalities before you enter.</p>
+        </button>
+        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('history')}>
+          <BarChart2 color="var(--accent-green)" />
+          <h3>History</h3>
+          <p>Open past sessions and review coaching reports.</p>
+        </button>
+        <div className="flat-card feature-card-button" style={{ cursor: 'default' }}>
+          <Home color="var(--accent-yellow)" />
+          <h3>{history.length || 0} Sessions</h3>
+          <p>{latestScore ? `${latestScore}% average coaching score` : 'No completed scores yet'}</p>
+        </div>
+      </div>
+
+      <div className="professional-band">
+        <div className="flat-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+            <Sparkles color="var(--primary)" />
+            <div>
+              <h2 style={{ fontSize: '1.2rem' }}>Real GD Toolkit</h2>
+              <p style={{ fontSize: '0.9rem' }}>Built to feel live while keeping API calls controlled.</p>
+            </div>
+          </div>
+
+          <div className="toolkit-list">
+            {REAL_GD_FEATURES.map((feature) => {
+              const Icon = feature.icon;
+              return (
+                <div key={feature.title} className="toolkit-row">
+                  <div className="toolkit-icon"><Icon size={18} /></div>
+                  <div>
+                    <h3 style={{ fontSize: '0.95rem', marginBottom: '2px' }}>{feature.title}</h3>
+                    <p style={{ fontSize: '0.82rem', lineHeight: 1.4 }}>{feature.description}</p>
+                  </div>
+                  <span className="badge badge-success" style={{ whiteSpace: 'nowrap' }}>{feature.status}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flat-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+            <Clock color="var(--accent-blue)" />
+            <div>
+              <h2 style={{ fontSize: '1.2rem' }}>Quota Strategy</h2>
+              <p style={{ fontSize: '0.9rem' }}>Designed for Gemini free-tier discipline.</p>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: '14px' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', fontWeight: 700, marginBottom: '8px' }}>
+                <span>Default request ceiling</span>
+                <span>10 RPM</span>
+              </div>
+              <div className="quota-meter" style={{ '--meter-width': '67%' }}><span /></div>
+            </div>
+            <p style={{ fontSize: '0.88rem', lineHeight: 1.5 }}>
+              Live coaching is throttled, moderation checks every few turns, and the full report is generated only once at the end.
+            </p>
+            <button className="btn-primary" type="button" onClick={() => onChangeSection?.('setup')} style={{ width: '100%' }}>
+              <Play size={16} fill="white" /> Start Structured Practice
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="dashboard-shell">
       {error && (
         <div style={{
           display: 'flex',
@@ -157,9 +539,9 @@ export default function Dashboard({ onStartSession, onViewReport }) {
           gap: '12px',
           background: 'rgba(245, 158, 11, 0.1)',
           border: '1px solid rgba(245, 158, 11, 0.25)',
-          borderRadius: '12px',
+          borderRadius: '8px',
           padding: '16px',
-          marginBottom: '30px',
+          marginBottom: '24px',
           color: 'var(--accent-yellow)'
         }}>
           <AlertCircle size={24} />
@@ -170,422 +552,10 @@ export default function Dashboard({ onStartSession, onViewReport }) {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px', alignItems: 'start' }}>
-        
-        {/* GD Configurator Form */}
-        <div className="flat-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Sparkles style={{ color: 'var(--primary)' }} />
-            <h2 style={{ fontSize: '1.4rem' }}>Configure Discussion</h2>
-          </div>
-
-          <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            
-            {/* Topic Input */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                DISCUSSION TOPIC
-              </label>
-              <input
-                type="text"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                placeholder="Enter custom discussion topic..."
-                required
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '10px',
-                  padding: '14px',
-                  color: 'var(--text-main)',
-                  fontSize: '1rem',
-                  outline: 'none',
-                  transition: 'var(--transition-smooth)'
-                }}
-                onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
-                onBlur={(e) => e.target.style.borderColor = 'var(--border-color)'}
-              />
-            </div>
-
-            {/* Trending Suggestions */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                OR SELECT A TRENDING TOPIC:
-              </span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                {SUGGESTED_TOPICS.map((t, idx) => (
-                  <button
-                    key={`sug-${idx}`}
-                    type="button"
-                    onClick={() => setTopic(t)}
-                    style={{
-                      background: topic === t ? 'rgba(139, 92, 246, 0.15)' : 'rgba(255,255,255,0.03)',
-                      border: topic === t ? '1px solid var(--primary)' : '1px solid var(--border-color)',
-                      color: topic === t ? '#c084fc' : 'var(--text-muted)',
-                      padding: '8px 12px',
-                      borderRadius: '8px',
-                      fontSize: '0.85rem',
-                      cursor: 'pointer',
-                      transition: 'var(--transition-smooth)'
-                    }}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Resume Upload AI Topics */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Sparkles size={14} /> AI TOPICS FROM RESUME:
-                </span>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                  style={{
-                    background: 'none',
-                    border: '1px solid var(--primary)',
-                    color: 'var(--primary)',
-                    padding: '6px 12px',
-                    borderRadius: '8px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                  }}
-                >
-                  {isUploading ? <><span className="spinning-icon"><RefreshCw size={14} /></span> Analyzing...</> : <><Upload size={14} /> Upload Resume (PDF/TXT)</>}
-                </button>
-                <input
-                  type="file"
-                  accept=".pdf,.txt"
-                  ref={fileInputRef}
-                  style={{ display: 'none' }}
-                  onChange={handleResumeUpload}
-                />
-              </div>
-
-              {uploadError && <div style={{ fontSize: '0.8rem', color: 'var(--accent-red)' }}>{uploadError}</div>}
-              
-              {resumeTopics.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
-                  {resumeTopics.map((t, idx) => (
-                    <button
-                      key={`res-${idx}`}
-                      type="button"
-                      onClick={() => setTopic(t)}
-                      style={{
-                        background: topic === t ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.03)',
-                        border: topic === t ? '1px solid var(--accent-green)' : '1px dashed var(--border-color)',
-                        color: topic === t ? 'var(--accent-green)' : 'var(--text-muted)',
-                        padding: '8px 12px',
-                        borderRadius: '8px',
-                        fontSize: '0.85rem',
-                        cursor: 'pointer',
-                        transition: 'var(--transition-smooth)'
-                      }}
-                    >
-                      <FileText size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: 'text-top' }} />
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Industry Context Input */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                INDUSTRY CONTEXT (AI PERSONAS)
-              </label>
-              <select
-                value={industryContext}
-                onChange={(e) => setIndustryContext(e.target.value)}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '10px',
-                  padding: '14px',
-                  color: 'var(--text-main)',
-                  fontSize: '1rem',
-                  outline: 'none',
-                  transition: 'var(--transition-smooth)',
-                  cursor: 'pointer'
-                }}
-                onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
-                onBlur={(e) => e.target.style.borderColor = 'var(--border-color)'}
-              >
-                {INDUSTRY_CONTEXTS.map((ctx) => (
-                  <option key={ctx} value={ctx} style={{ color: '#000' }}>{ctx}</option>
-                ))}
-              </select>
-            </div>
-            {/* AI Participants Count Input */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                NUMBER OF AI PARTICIPANTS
-              </label>
-              <div style={{ display: 'flex', gap: '15px' }}>
-                {[2, 3, 4].map((num) => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => setNumParticipants(num)}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      borderRadius: '10px',
-                      background: numParticipants === num ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.03)',
-                      border: numParticipants === num ? '1px solid var(--accent-green)' : '1px solid var(--border-color)',
-                      color: numParticipants === num ? 'var(--accent-green)' : 'var(--text-main)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '6px',
-                      transition: 'var(--transition-smooth)'
-                    }}
-                  >
-                    <Users size={16} />
-                    {num} Members
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Duration Input */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                ROUND DURATION
-              </label>
-              <div style={{ display: 'flex', gap: '15px' }}>
-                {[2, 5, 10].map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setDuration(m)}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      borderRadius: '10px',
-                      background: duration === m ? 'rgba(6, 182, 212, 0.15)' : 'rgba(255,255,255,0.03)',
-                      border: duration === m ? '1px solid var(--secondary)' : '1px solid var(--border-color)',
-                      color: duration === m ? '#22d3ee' : 'var(--text-main)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '6px',
-                      transition: 'var(--transition-smooth)'
-                    }}
-                  >
-                    <Clock size={16} />
-                    {m} Minutes
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="btn-primary"
-              style={{
-                width: '100%',
-                padding: '16px',
-                justifyContent: 'center',
-                fontSize: '1.1rem',
-                marginTop: '10px'
-              }}
-            >
-              <Play fill="white" size={18} />
-              {isSubmitting ? 'Starting...' : 'Enter Virtual GD Round'}
-            </button>
-          </form>
-        </div>
-
-        {/* AI Participants List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '5px' }}>
-            <Users style={{ color: 'var(--secondary)' }} />
-            <h2 style={{ fontSize: '1.4rem' }}>Your AI Group Members</h2>
-          </div>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {PARTICIPANTS.slice(0, numParticipants).map((p, idx) => (
-              <div
-                key={idx}
-                className="flat-card"
-                style={{
-                  padding: '16px',
-                  display: 'flex',
-                  gap: '15px',
-                  alignItems: 'start',
-                  borderLeft: `4px solid ${p.color}`
-                }}
-              >
-                <div style={{
-                  width: '40px',
-                  height: '40px',
-                  borderRadius: '50%',
-                  background: p.color,
-                  color: 'white',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 800,
-                  fontSize: '1.2rem',
-                  boxShadow: `0 0 10px ${p.color}44`
-                }}>
-                  {p.name[0]}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
-                    <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>{p.name}</h3>
-                    <span className="badge" style={{
-                      background: `${p.color}15`,
-                      color: p.color,
-                      border: `1px solid ${p.color}33`,
-                      fontSize: '0.7rem'
-                    }}>{p.role}</span>
-                  </div>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>{p.desc}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-
-      {/* Discussion History */}
-      <div style={{ marginTop: '50px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', paddingLeft: '5px' }}>
-          <BarChart2 style={{ color: 'var(--accent-green)' }} />
-          <h2 style={{ fontSize: '1.5rem' }}>Your Discussion Intelligence History</h2>
-        </div>
-
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-            Loading historical performance...
-          </div>
-        ) : history.length === 0 ? (
-          <div className="flat-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-            <Calendar size={40} style={{ margin: '0 auto 10px', opacity: 0.3 }} />
-            <p>No group discussions found. Complete your first practice round above!</p>
-          </div>
-        ) : (
-          <>
-            {/* Visual Progress Chart */}
-            <div className="flat-card" style={{ marginBottom: '30px', padding: '24px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-                <TrendingUp style={{ color: 'var(--primary)' }} size={20} />
-                <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Performance Over Time</h3>
-              </div>
-              <div style={{ height: '250px', width: '100%' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={[...history].reverse().filter(h => h.aiEvaluation).map((h, i) => ({
-                    name: `S${i + 1}`,
-                    date: new Date(h.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-                    Leadership: h.aiEvaluation.leadershipScore,
-                    Confidence: h.aiEvaluation.confidenceScore,
-                    Effectiveness: h.aiEvaluation.effectivenessScore
-                  }))}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} />
-                    <Tooltip 
-                      contentStyle={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '8px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}
-                      labelStyle={{ color: 'var(--text-muted)', marginBottom: '5px' }}
-                    />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: '0.8rem', paddingTop: '10px' }} />
-                    <Line type="monotone" dataKey="Leadership" stroke="#c084fc" strokeWidth={3} dot={{ r: 4, fill: '#c084fc', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="Confidence" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4, fill: '#22d3ee', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="Effectiveness" stroke="#34d399" strokeWidth={3} dot={{ r: 4, fill: '#34d399', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* List */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '15px' }}>
-              {history.map((h) => {
-                const score = h.aiEvaluation ? Math.round((h.aiEvaluation.leadershipScore + h.aiEvaluation.confidenceScore + h.aiEvaluation.effectivenessScore) / 3) : 0;
-              return (
-                <div
-                  key={h._id}
-                  className="flat-card"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '20px 24px',
-                    gap: '20px',
-                    flexWrap: 'wrap'
-                  }}
-                >
-                  <div style={{ flex: 1, minWidth: '250px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                      <span className="badge badge-primary">{h.durationLimit} min round</span>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        {new Date(h.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                      </span>
-                    </div>
-                    <h3 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'white' }}>{h.topic}</h3>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-                    
-                    {/* Performance metrics display */}
-                    {h.aiEvaluation && (
-                      <div style={{ display: 'flex', gap: '15px', textAlign: 'center' }}>
-                        <div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>LEADERSHIP</div>
-                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#c084fc' }}>{h.aiEvaluation.leadershipScore}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>CONFIDENCE</div>
-                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#22d3ee' }}>{h.aiEvaluation.confidenceScore}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>EFFECTIVE</div>
-                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#34d399' }}>{h.aiEvaluation.effectivenessScore}</div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderLeft: '1px solid var(--border-color)', paddingLeft: '20px' }}>
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>OVERALL COHERENCE</div>
-                        <div style={{ fontSize: '1.3rem', fontWeight: 800, color: score > 75 ? 'var(--accent-green)' : 'var(--accent-yellow)' }}>
-                          {score ? `${score}%` : 'Pending'}
-                        </div>
-                      </div>
-                      
-                      <button
-                        onClick={() => onViewReport(h._id)}
-                        className="btn-secondary"
-                        style={{ padding: '8px 16px', fontSize: '0.9rem' }}
-                      >
-                        View Coaching
-                      </button>
-                    </div>
-
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          </>
-        )}
-      </div>
-
+      {activeSection === 'overview' && renderOverview()}
+      {activeSection === 'setup' && renderSetup()}
+      {activeSection === 'members' && renderMembers()}
+      {activeSection === 'history' && renderHistory()}
     </div>
   );
 }

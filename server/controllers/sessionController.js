@@ -131,11 +131,35 @@ const getAIResponse = async (req, res) => {
       industryContext || 'General/Academic'
     );
 
-    return res.json({ text: aiSpeech });
+    return res.json({ text: aiSpeech, rateLimit: geminiService.getRateLimitStatus() });
   } catch (error) {
     console.error('Generate AI Response Error:', error);
     return res.status(500).json({ error: 'Failed to generate AI response.' });
   }
+};
+
+/**
+ * Lightweight live coaching for the current GD transcript.
+ * The Gemini service queues these calls so the free-tier RPM limit is respected.
+ */
+const getLiveAnalysis = async (req, res) => {
+  try {
+    const { topic, transcript, userMetrics } = req.body;
+
+    if (!topic || !Array.isArray(transcript)) {
+      return res.status(400).json({ error: 'Topic and transcript array are required.' });
+    }
+
+    const analysis = await geminiService.analyzeLiveTurn(topic, transcript, userMetrics || {});
+    return res.json(analysis);
+  } catch (error) {
+    console.error('Live Analysis Error:', error);
+    return res.status(500).json({ error: 'Failed to generate live analysis.' });
+  }
+};
+
+const getAIStatus = (req, res) => {
+  return res.json(geminiService.getRateLimitStatus());
 };
 
 /**
@@ -214,7 +238,7 @@ const moderateGD = async (req, res) => {
 
     const intervention = await geminiService.moderateDiscussion(topic, transcript);
     
-    return res.json({ intervention });
+    return res.json({ intervention, rateLimit: geminiService.getRateLimitStatus() });
   } catch (error) {
     console.error('Moderation Error:', error);
     // On error, return null intervention to keep discussion going
@@ -227,6 +251,8 @@ module.exports = {
   getHistory,
   getSessionById,
   getAIResponse,
+  getLiveAnalysis,
+  getAIStatus,
   completeSession,
   moderateGD
 };

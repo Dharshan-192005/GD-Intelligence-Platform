@@ -3,6 +3,15 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // Check if API Key is available
 const apiKey = process.env.GEMINI_API_KEY || '';
 const hasApiKey = apiKey.trim().length > 0;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_RPM_LIMIT = Math.max(1, Number.parseInt(process.env.GEMINI_RPM_LIMIT || '10', 10));
+const GEMINI_MIN_INTERVAL_MS = Math.ceil(60000 / GEMINI_RPM_LIMIT);
+const GEMINI_TIMEOUT_MS = Math.max(5000, Number.parseInt(process.env.GEMINI_TIMEOUT_MS || '30000', 10));
+
+let geminiQueue = Promise.resolve();
+let lastGeminiRequestAt = 0;
+let geminiCooldownUntil = 0;
+let recentGeminiCalls = [];
 
 let genAI = null;
 if (hasApiKey) {
@@ -16,18 +25,151 @@ if (hasApiKey) {
   console.warn('⚠️ No GEMINI_API_KEY detected. AI participants will use static fallback responses.');
 }
 
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const pruneRecentCalls = () => {
+  const cutoff = Date.now() - 60000;
+  recentGeminiCalls = recentGeminiCalls.filter(ts => ts > cutoff);
+};
+
+const getRateLimitStatus = () => {
+  pruneRecentCalls();
+  const now = Date.now();
+  const nextAllowedAt = Math.max(lastGeminiRequestAt + GEMINI_MIN_INTERVAL_MS, geminiCooldownUntil);
+  return {
+    enabled: hasApiKey && Boolean(genAI),
+    model: GEMINI_MODEL,
+    rpmLimit: GEMINI_RPM_LIMIT,
+    callsInLastMinute: recentGeminiCalls.length,
+    queued: Math.max(0, recentGeminiCalls.length - 1),
+    nextAllowedInMs: Math.max(0, nextAllowedAt - now)
+  };
+};
+
+const withTimeout = (promise, timeoutMs) => {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Gemini request timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+};
+
+const runGeminiRequest = async (label, task) => {
+  if (!hasApiKey || !genAI) return null;
+
+  const queuedTask = geminiQueue.then(async () => {
+    const now = Date.now();
+    const nextAllowedAt = Math.max(lastGeminiRequestAt + GEMINI_MIN_INTERVAL_MS, geminiCooldownUntil);
+    if (nextAllowedAt > now) {
+      await wait(nextAllowedAt - now);
+    }
+
+    lastGeminiRequestAt = Date.now();
+    recentGeminiCalls.push(lastGeminiRequestAt);
+    pruneRecentCalls();
+
+    try {
+      console.log(`[Gemini Queue] ${label} (${recentGeminiCalls.length}/${GEMINI_RPM_LIMIT} RPM window)`);
+      return await withTimeout(task(), GEMINI_TIMEOUT_MS);
+    } catch (err) {
+      if (err.message && /429|quota|rate|resource exhausted/i.test(err.message)) {
+        geminiCooldownUntil = Date.now() + GEMINI_MIN_INTERVAL_MS * 2;
+        console.warn(`[Gemini Queue] Rate limit pressure detected. Cooling down for ${GEMINI_MIN_INTERVAL_MS * 2}ms.`);
+      }
+      throw err;
+    }
+  });
+
+  geminiQueue = queuedTask.catch(() => null);
+  return queuedTask;
+};
+
+const buildModel = (generationConfig = {}) => genAI.getGenerativeModel({
+  model: GEMINI_MODEL,
+  generationConfig
+});
+
+const stripJsonFences = (text) => {
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```json')) cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  else if (cleaned.startsWith('```')) cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  return cleaned.trim();
+};
+
+const getUserContributionQuality = (transcript) => {
+  const userText = transcript
+    .filter(t => t.speaker === 'User')
+    .map(t => t.text || '')
+    .join(' ')
+    .toLowerCase()
+    .replace(/\[interrupted\]/g, ' ')
+    .trim();
+  const words = userText.match(/[a-z0-9']+/g) || [];
+  const uniqueWords = new Set(words);
+  const fillerOnlyWords = new Set(['ok', 'okay', 'yes', 'yeah', 'no', 'hmm', 'fine', 'right', 'true']);
+  const meaningfulWords = words.filter(word => !fillerOnlyWords.has(word));
+  const repeatedLowEffort = words.length > 0 && meaningfulWords.length <= 2 && uniqueWords.size <= 3;
+
+  return {
+    userText,
+    wordCount: words.length,
+    uniqueWordCount: uniqueWords.size,
+    meaningfulWordCount: meaningfulWords.length,
+    repeatedLowEffort,
+    isVeryWeak: words.length < 12 || repeatedLowEffort || meaningfulWords.length < 6
+  };
+};
+
+const applyQualityCaps = (evaluation, transcript, userMetrics) => {
+  const quality = getUserContributionQuality(transcript);
+  const speakTime = userMetrics.speakingTime || 0;
+  const capped = { ...evaluation };
+
+  if (speakTime === 0 || quality.wordCount === 0) {
+    capped.leadershipScore = 0;
+    capped.confidenceScore = 0;
+    capped.effectivenessScore = 0;
+  } else if (quality.repeatedLowEffort) {
+    capped.leadershipScore = Math.min(capped.leadershipScore || 0, 12);
+    capped.confidenceScore = Math.min(capped.confidenceScore || 0, 18);
+    capped.effectivenessScore = Math.min(capped.effectivenessScore || 0, 10);
+  } else if (quality.isVeryWeak || speakTime < 10) {
+    capped.leadershipScore = Math.min(capped.leadershipScore || 0, 30);
+    capped.confidenceScore = Math.min(capped.confidenceScore || 0, 35);
+    capped.effectivenessScore = Math.min(capped.effectivenessScore || 0, 32);
+  }
+
+  if (quality.isVeryWeak) {
+    capped.analysisSummary = `Your contribution was too brief and low-detail to demonstrate strong GD performance. ${capped.analysisSummary || ''}`.trim();
+    capped.weaknesses = [
+      'Responses were too short or repetitive to show argument quality.',
+      ...(Array.isArray(capped.weaknesses) ? capped.weaknesses.slice(0, 2) : [])
+    ];
+    capped.actionableTips = [
+      'Use a complete point with reasoning: claim, because, example, and impact.',
+      ...(Array.isArray(capped.actionableTips) ? capped.actionableTips.slice(0, 2) : [])
+    ];
+    capped.topicRelevance = quality.repeatedLowEffort
+      ? 'The user did not add a meaningful topic-related argument.'
+      : capped.topicRelevance;
+    capped.argumentDepth = quality.repeatedLowEffort
+      ? 'No meaningful argument depth was demonstrated; the contribution was mostly acknowledgement.'
+      : capped.argumentDepth;
+  }
+
+  return capped;
+};
+
 /**
  * Generate AI participant argument using real Gemini LLM
  */
 const generateParticipantResponse = async (topic, transcript, speakerName, personaPrompt, industryContext = 'General/Academic') => {
   if (hasApiKey && genAI) {
     try {
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.0-flash',
-        generationConfig: { temperature: 0.9, topP: 0.95 }
-      });
+      const model = buildModel({ temperature: 0.85, topP: 0.9, maxOutputTokens: 140 });
       
-      const transcriptFormatted = transcript.slice(-10).map(t => `${t.speaker}: ${t.text}`).join('\n');
+      const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
       
       const prompt = `You are participating in a live Group Discussion (GD) round. Your name is ${speakerName}.
 
@@ -47,12 +189,13 @@ RULES:
 - Keep it 1-3 sentences (30-60 words). This is a fast-paced discussion.
 - React to the most recent speaker. If "User" just spoke, respond directly to their point.
 - Sound natural and human. No meta-commentary about your role.
+- Ask a pointed follow-up only when it makes the discussion feel more realistic.
 - Stay on topic: "${topic}". Make substantive points with real reasoning.
 - CRITICAL: DO NOT repeat previous arguments. Ensure your argument adds new perspective and is distinctly different from what others have already said.
 
 Your response:`;
 
-      const result = await model.generateContent(prompt);
+      const result = await runGeminiRequest(`participant:${speakerName}`, () => model.generateContent(prompt));
       const response = await result.response;
       let text = response.text().trim();
       
@@ -111,7 +254,7 @@ Your response:`;
 const analyzeGDSession = async (topic, transcript, userMetrics) => {
   if (hasApiKey && genAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const model = buildModel({ temperature: 0.25, topP: 0.8, maxOutputTokens: 900 });
       
       const transcriptFormatted = transcript.map(t => `${t.speaker}: ${t.text}`).join('\n');
       
@@ -162,18 +305,11 @@ CRITICAL SCORING RULES:
 - Scores of 90+ should be RARE and only for truly outstanding performance
 - Base your evaluation on ACTUAL transcript content, not assumptions`;
 
-      const result = await model.generateContent(prompt);
+      const result = await runGeminiRequest('final-analysis', () => model.generateContent(prompt));
       const response = await result.response;
-      let responseText = response.text().trim();
+      const responseText = stripJsonFences(response.text());
       
-      // Strip markdown code fences if Gemini wraps the JSON
-      if (responseText.startsWith('```json')) {
-        responseText = responseText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      } else if (responseText.startsWith('```')) {
-        responseText = responseText.replace(/^```\s*/, '').replace(/\s*```$/, '');
-      }
-      
-      const parsed = JSON.parse(responseText);
+      const parsed = applyQualityCaps(JSON.parse(responseText), transcript, userMetrics);
       console.log('[Gemini LLM] Analysis complete — Leadership:', parsed.leadershipScore, 'Confidence:', parsed.confidenceScore, 'Effectiveness:', parsed.effectivenessScore);
       return parsed;
     } catch (err) {
@@ -189,23 +325,24 @@ CRITICAL SCORING RULES:
   const interruptions = userMetrics.interruptionCount || 0;
   const wpm = userMetrics.pacingWpm || 0;
   const speakTime = userMetrics.speakingTime || 0;
+  const quality = getUserContributionQuality(transcript);
 
-  let confidence = 65;
+  let confidence = 55;
   if (wpm > 150 || wpm < 90) confidence -= 10;
   if (fillers > 5) confidence -= Math.min(fillers * 3, 25);
-  confidence = Math.max(25, Math.min(90, confidence));
+  confidence = Math.max(15, Math.min(80, confidence));
 
-  let leadership = 45;
+  let leadership = 35;
   if (speakPct >= 20 && speakPct <= 35) leadership += 20;
   else if (speakPct > 35) leadership += 5;
   else if (speakPct < 10) leadership -= 20;
   if (interruptions > 3) leadership -= 15;
   if (speakTime < 10) leadership = Math.min(leadership, 30);
-  leadership = Math.max(20, Math.min(85, leadership));
+  leadership = Math.max(10, Math.min(80, leadership));
 
   let effectiveness = Math.round((confidence + leadership) / 2);
   if (speakTime < 10) effectiveness = Math.min(effectiveness, 35);
-  effectiveness = Math.max(20, Math.min(85, effectiveness));
+  effectiveness = Math.max(10, Math.min(80, effectiveness));
 
   // Override if user barely spoke or didn't speak at all
   if (speakTime === 0) {
@@ -215,6 +352,15 @@ CRITICAL SCORING RULES:
   } else if (speakTime < 10) {
     confidence = Math.min(confidence, 30);
   }
+  if (quality.repeatedLowEffort) {
+    leadership = Math.min(leadership, 12);
+    confidence = Math.min(confidence, 18);
+    effectiveness = Math.min(effectiveness, 10);
+  } else if (quality.isVeryWeak) {
+    leadership = Math.min(leadership, 30);
+    confidence = Math.min(confidence, 35);
+    effectiveness = Math.min(effectiveness, 32);
+  }
 
   const userPhrases = transcript.filter(t => t.speaker === 'User').map(t => t.text);
   const sample = userPhrases.length > 0 ? userPhrases[0] : "I think this topic is important.";
@@ -223,13 +369,13 @@ CRITICAL SCORING RULES:
     leadershipScore: leadership,
     confidenceScore: confidence,
     effectivenessScore: effectiveness,
-    analysisSummary: `[Offline Analysis] You participated for ${speakTime} seconds (${speakPct}% of the discussion). Your pacing was ${wpm} WPM. ${speakTime < 15 ? 'Your participation was minimal, which significantly limits leadership assessment.' : 'You showed willingness to engage, though there is room for more structured argumentation.'} Connect to the internet and add a Gemini API key for real AI-powered coaching.`,
+    analysisSummary: `[Offline Analysis] You participated for ${speakTime} seconds (${speakPct}% of the discussion). Your pacing was ${wpm} WPM. ${quality.isVeryWeak ? 'Your contribution was too brief or repetitive to show meaningful reasoning, so the score is capped low.' : 'You showed willingness to engage, though there is room for more structured argumentation.'} Connect the backend with Gemini for deeper coaching.`,
     strengths: [
-      speakTime > 20 ? "Consistent participation throughout the discussion." : "Showed restraint and listened before speaking.",
-      "Engaged with the discussion topic directly."
+      quality.isVeryWeak ? "Attempted to participate in the discussion." : "Engaged with the discussion topic directly.",
+      speakTime > 20 ? "Maintained participation for multiple seconds." : "Kept the contribution brief."
     ],
     weaknesses: [
-      fillers > 4 ? "Heavy use of filler words weakening perceived confidence." : "Limited engagement with other participants' specific points.",
+      quality.isVeryWeak ? "Contribution lacked a clear claim, reasoning, or example." : "Limited engagement with other participants' specific points.",
       speakTime < 15 ? "Insufficient speaking time to demonstrate leadership." : "Arguments could benefit from more structured evidence."
     ],
     actionableTips: [
@@ -237,8 +383,8 @@ CRITICAL SCORING RULES:
       "Practice replacing filler words with deliberate 1-second pauses.",
       "Actively reference other speakers' points to show engaged listening."
     ],
-    topicRelevance: "[Offline] Unable to deeply analyze topic relevance without LLM. Add GEMINI_API_KEY for real analysis.",
-    argumentDepth: "[Offline] Unable to evaluate argument depth without LLM. Add GEMINI_API_KEY for real analysis.",
+    topicRelevance: quality.repeatedLowEffort ? "No meaningful topic relevance was demonstrated." : "[Offline] Limited relevance analysis without LLM.",
+    argumentDepth: quality.isVeryWeak ? "Very low argument depth; use a claim, reason, example, and conclusion." : "[Offline] Limited argument-depth analysis without LLM.",
     suggestedPhrases: [
       {
         original: sample.length > 60 ? sample.substring(0, 60) + "..." : sample,
@@ -255,7 +401,7 @@ CRITICAL SCORING RULES:
 const generateResumeTopics = async (resumeText) => {
   if (hasApiKey && genAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const model = buildModel({ temperature: 0.45, maxOutputTokens: 180 });
       
       const prompt = `You are an expert career coach and corporate recruiter. 
 Read the following resume text and generate 3 custom Group Discussion (GD) topics that would be perfectly suited to test this candidate's domain knowledge, strategic thinking, and industry awareness based on their background.
@@ -266,12 +412,9 @@ ${resumeText.substring(0, 3000)}
 Return ONLY a JSON array of 3 strings (the 3 topics). No markdown fences, no other text.
 Example: ["Topic 1", "Topic 2", "Topic 3"]`;
 
-      const result = await model.generateContent(prompt);
+      const result = await runGeminiRequest('resume-topics', () => model.generateContent(prompt));
       const response = await result.response;
-      let text = response.text().trim();
-      
-      if (text.startsWith('```json')) text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      else if (text.startsWith('```')) text = text.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      const text = stripJsonFences(response.text());
       
       const topics = JSON.parse(text);
       return Array.isArray(topics) ? topics.slice(0, 3) : [topics.toString()];
@@ -294,10 +437,7 @@ Example: ["Topic 1", "Topic 2", "Topic 3"]`;
 const moderateDiscussion = async (topic, transcript) => {
   if (hasApiKey && genAI) {
     try {
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.0-flash',
-        generationConfig: { temperature: 0.2 } // lower temperature for more consistent evaluation
-      });
+      const model = buildModel({ temperature: 0.15, maxOutputTokens: 80 });
       
       const transcriptFormatted = transcript.slice(-6).map(t => `${t.speaker}: ${t.text}`).join('\n');
       
@@ -314,7 +454,7 @@ Determine if the recent conversation is drifting completely off-topic from "${to
 
 Return ONLY the text "OK" or the intervention sentence. No other text.`;
 
-      const result = await model.generateContent(prompt);
+      const result = await runGeminiRequest('moderation', () => model.generateContent(prompt));
       const response = await result.response;
       let text = response.text().trim();
       
@@ -334,9 +474,61 @@ Return ONLY the text "OK" or the intervention sentence. No other text.`;
   return null; // fallback: don't intervene if no AI or error
 };
 
+const analyzeLiveTurn = async (topic, transcript, userMetrics = {}) => {
+  const userTurns = transcript.filter(t => t.speaker === 'User');
+  const latestUserTurn = userTurns[userTurns.length - 1]?.text || '';
+  const fallback = {
+    summary: latestUserTurn
+      ? 'Live metrics updated. Add one clearer example or data point in your next turn.'
+      : 'Waiting for your first contribution.',
+    relevanceScore: latestUserTurn ? 70 : 0,
+    clarityScore: latestUserTurn && latestUserTurn.split(/\s+/).length > 12 ? 72 : 55,
+    nextMove: 'Respond directly to the last speaker, then link your point back to the topic.',
+    rateLimit: getRateLimitStatus()
+  };
+
+  if (hasApiKey && genAI && latestUserTurn) {
+    try {
+      const model = buildModel({ temperature: 0.2, maxOutputTokens: 220 });
+      const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
+      const prompt = `You are a real-time GD coach. Analyze only the User's recent contribution.
+
+TOPIC: "${topic}"
+RECENT TRANSCRIPT:
+${transcriptFormatted}
+
+USER METRICS:
+- Speaking Time: ${userMetrics.speakingTime || 0}s
+- Speak Share: ${userMetrics.speakPercentage || 0}%
+- Interruptions: ${userMetrics.interruptionCount || 0}
+- Fillers: ${userMetrics.fillerWordCount || 0}
+- Pacing: ${userMetrics.pacingWpm || 0} WPM
+
+Return ONLY raw JSON:
+{
+  "summary": "<one short sentence about the latest user contribution>",
+  "relevanceScore": <0-100>,
+  "clarityScore": <0-100>,
+  "nextMove": "<one concise suggestion for the user's next turn>"
+}`;
+
+      const result = await runGeminiRequest('live-analysis', () => model.generateContent(prompt));
+      const response = await result.response;
+      const parsed = JSON.parse(stripJsonFences(response.text()));
+      return { ...fallback, ...parsed, rateLimit: getRateLimitStatus() };
+    } catch (err) {
+      console.error('[Gemini ERROR] Live analysis failed:', err.message);
+    }
+  }
+
+  return fallback;
+};
+
 module.exports = {
   generateParticipantResponse,
   analyzeGDSession,
   generateResumeTopics,
-  moderateDiscussion
+  moderateDiscussion,
+  analyzeLiveTurn,
+  getRateLimitStatus
 };
