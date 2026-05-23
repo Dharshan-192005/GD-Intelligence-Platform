@@ -3,6 +3,8 @@ const User = require('../models/User');
 const { checkInMemoryMode } = require('../config/db');
 
 const inMemoryUsers = [];
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || process.env.GEMINI_API_KEY || 'gd-platform-dev-secret';
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
@@ -19,6 +21,56 @@ const publicUser = (user) => ({
   name: user.name,
   email: user.email
 });
+
+const base64Url = (value) => Buffer
+  .from(value)
+  .toString('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/, '');
+
+const signPayload = (payload) => crypto
+  .createHmac('sha256', TOKEN_SECRET)
+  .update(payload)
+  .digest('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/, '');
+
+const createToken = (user) => {
+  const payload = base64Url(JSON.stringify({
+    userId: String(user._id || user.id),
+    email: user.email,
+    exp: Date.now() + TOKEN_TTL_MS
+  }));
+  return `${payload}.${signPayload(payload)}`;
+};
+
+const verifyToken = (token) => {
+  const [payload, signature] = String(token || '').split('.');
+  if (!payload || !signature || signPayload(payload) !== signature) return null;
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (!decoded.userId || decoded.exp < Date.now()) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+};
+
+const requireAuth = (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const decoded = verifyToken(token);
+
+  if (!decoded) {
+    return res.status(401).json({ error: 'Authentication required. Please sign in again.' });
+  }
+
+  req.user = { id: decoded.userId, email: decoded.email };
+  return next();
+};
 
 const signup = async (req, res) => {
   try {
@@ -47,7 +99,7 @@ const signup = async (req, res) => {
         createdAt: new Date()
       };
       inMemoryUsers.push(user);
-      return res.status(201).json({ user: publicUser(user) });
+      return res.status(201).json({ user: publicUser(user), token: createToken(user) });
     }
 
     const existing = await User.findOne({ email: cleanEmail });
@@ -62,7 +114,7 @@ const signup = async (req, res) => {
       ...credentials
     });
 
-    return res.status(201).json({ user: publicUser(user) });
+    return res.status(201).json({ user: publicUser(user), token: createToken(user) });
   } catch (error) {
     console.error('Signup Error:', error);
     return res.status(500).json({ error: 'Could not create account.' });
@@ -91,7 +143,7 @@ const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
-    return res.json({ user: publicUser(user) });
+    return res.json({ user: publicUser(user), token: createToken(user) });
   } catch (error) {
     console.error('Login Error:', error);
     return res.status(500).json({ error: 'Could not sign in.' });
@@ -100,5 +152,6 @@ const login = async (req, res) => {
 
 module.exports = {
   signup,
-  login
+  login,
+  requireAuth
 };

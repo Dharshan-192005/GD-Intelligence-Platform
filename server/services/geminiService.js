@@ -7,11 +7,14 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const GEMINI_RPM_LIMIT = Math.max(1, Number.parseInt(process.env.GEMINI_RPM_LIMIT || '10', 10));
 const GEMINI_MIN_INTERVAL_MS = Math.ceil(60000 / GEMINI_RPM_LIMIT);
 const GEMINI_TIMEOUT_MS = Math.max(5000, Number.parseInt(process.env.GEMINI_TIMEOUT_MS || '30000', 10));
+const GEMINI_MAX_QUEUE_WAIT_MS = Math.max(1000, Number.parseInt(process.env.GEMINI_MAX_QUEUE_WAIT_MS || '12000', 10));
+const GEMINI_FINAL_MAX_QUEUE_WAIT_MS = Math.max(GEMINI_MAX_QUEUE_WAIT_MS, Number.parseInt(process.env.GEMINI_FINAL_MAX_QUEUE_WAIT_MS || '30000', 10));
 
 let geminiQueue = Promise.resolve();
 let lastGeminiRequestAt = 0;
 let geminiCooldownUntil = 0;
 let recentGeminiCalls = [];
+let pendingGeminiRequests = 0;
 
 let genAI = null;
 if (hasApiKey) {
@@ -41,7 +44,7 @@ const getRateLimitStatus = () => {
     model: GEMINI_MODEL,
     rpmLimit: GEMINI_RPM_LIMIT,
     callsInLastMinute: recentGeminiCalls.length,
-    queued: Math.max(0, recentGeminiCalls.length - 1),
+    queued: pendingGeminiRequests,
     nextAllowedInMs: Math.max(0, nextAllowedAt - now)
   };
 };
@@ -55,14 +58,29 @@ const withTimeout = (promise, timeoutMs) => {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 };
 
-const runGeminiRequest = async (label, task) => {
+const runGeminiRequest = async (label, task, options = {}) => {
   if (!hasApiKey || !genAI) return null;
 
+  pendingGeminiRequests += 1;
+  const enqueuedAt = Date.now();
+  const maxQueueWaitMs = options.maxQueueWaitMs || (
+    label === 'final-analysis' ? GEMINI_FINAL_MAX_QUEUE_WAIT_MS : GEMINI_MAX_QUEUE_WAIT_MS
+  );
+
   const queuedTask = geminiQueue.then(async () => {
+    const queuedForMs = Date.now() - enqueuedAt;
+    if (queuedForMs > maxQueueWaitMs) {
+      throw new Error(`Gemini queue busy for ${queuedForMs}ms; falling back locally.`);
+    }
+
     const now = Date.now();
     const nextAllowedAt = Math.max(lastGeminiRequestAt + GEMINI_MIN_INTERVAL_MS, geminiCooldownUntil);
     if (nextAllowedAt > now) {
-      await wait(nextAllowedAt - now);
+      const waitMs = nextAllowedAt - now;
+      if (queuedForMs + waitMs > maxQueueWaitMs) {
+        throw new Error(`Gemini queue wait would exceed ${maxQueueWaitMs}ms; falling back locally.`);
+      }
+      await wait(waitMs);
     }
 
     lastGeminiRequestAt = Date.now();
@@ -79,6 +97,8 @@ const runGeminiRequest = async (label, task) => {
       }
       throw err;
     }
+  }).finally(() => {
+    pendingGeminiRequests = Math.max(0, pendingGeminiRequests - 1);
   });
 
   geminiQueue = queuedTask.catch(() => null);
@@ -345,7 +365,7 @@ CRITICAL SCORING RULES:
   effectiveness = Math.max(10, Math.min(80, effectiveness));
 
   // Override if user barely spoke or didn't speak at all
-  if (speakTime === 0) {
+  if (speakTime === 0 || quality.wordCount === 0) {
     confidence = 0;
     leadership = 0;
     effectiveness = 0;

@@ -24,8 +24,12 @@ export default function Signup({ onSignup, onNavigateToLogin }) {
       if (!res.ok) {
         throw new Error(data.error || 'Could not create account.');
       }
+      if (!data.token || !data.user) {
+        throw new Error('Account created but the server did not return a valid session token.');
+      }
 
       localStorage.setItem('gd_user', JSON.stringify(data.user));
+      localStorage.setItem('gd_token', data.token);
       onSignup(data.user);
     } catch (err) {
       setError(err.message || 'Could not create account. Please check the backend server.');

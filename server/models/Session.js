@@ -24,6 +24,11 @@ const TranscriptSchema = new mongoose.Schema({
 });
 
 const SessionSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    index: true
+  },
   topic: {
     type: String,
     required: true

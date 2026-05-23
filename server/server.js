@@ -12,7 +12,7 @@ const {
   completeSession,
   moderateGD
 } = require('./controllers/sessionController');
-const { signup, login } = require('./controllers/authController');
+const { signup, login, requireAuth } = require('./controllers/authController');
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -50,19 +50,19 @@ app.get('/api/health', (req, res) => {
 // Group Discussion Sessions API Routes
 const topicRoutes = require('./routes/topicRoutes');
 
-app.use('/api/topics', topicRoutes);
-
 app.post('/api/auth/signup', signup);
 app.post('/api/auth/login', login);
 
-app.post('/api/sessions', createSession);
-app.get('/api/sessions/history', getHistory);
-app.post('/api/sessions/moderate', moderateGD);
-app.post('/api/sessions/generate-response', getAIResponse);
-app.post('/api/sessions/live-analysis', getLiveAnalysis);
-app.get('/api/sessions/ai/status', getAIStatus);
-app.get('/api/sessions/:id', getSessionById);
-app.post('/api/sessions/:id/complete', completeSession);
+app.use('/api/topics', requireAuth, topicRoutes);
+
+app.post('/api/sessions', requireAuth, createSession);
+app.get('/api/sessions/history', requireAuth, getHistory);
+app.post('/api/sessions/moderate', requireAuth, moderateGD);
+app.post('/api/sessions/generate-response', requireAuth, getAIResponse);
+app.post('/api/sessions/live-analysis', requireAuth, getLiveAnalysis);
+app.get('/api/sessions/ai/status', requireAuth, getAIStatus);
+app.get('/api/sessions/:id', requireAuth, getSessionById);
+app.post('/api/sessions/:id/complete', requireAuth, completeSession);
 
 // 404 Route handler
 app.use((req, res, next) => {

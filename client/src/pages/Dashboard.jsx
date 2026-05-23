@@ -65,6 +65,11 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
   const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
 
+  const authHeaders = () => {
+    const token = localStorage.getItem('gd_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   useEffect(() => {
     fetchHistory();
   }, []);
@@ -81,7 +86,9 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('http://localhost:5000/api/sessions/history');
+      const res = await fetch('http://localhost:5000/api/sessions/history', {
+        headers: authHeaders()
+      });
       if (!res.ok) throw new Error('Failed to fetch historical runs.');
       const data = await res.json();
       setHistory(data);
@@ -105,6 +112,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
       const res = await fetch('http://localhost:5000/api/topics/from-resume', {
         method: 'POST',
+        headers: authHeaders(),
         body: formData
       });
 
@@ -136,7 +144,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       setIsSubmitting(true);
       const res = await fetch('http://localhost:5000/api/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ topic, durationLimit: duration, industryContext, numParticipants })
       });
 
@@ -211,109 +219,149 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
   const renderSetup = () => (
     <>
-      <SectionHeader
-        icon={Settings}
-        title="Configure Discussion"
-        description="Choose the topic, context, group size, and round duration before entering the virtual GD room."
-      />
+      <div className="setup-studio-hero">
+        <div>
+          <div className="setup-eyebrow"><Settings size={18} /> Practice Builder</div>
+          <h1>Design your GD round</h1>
+          <p>Shape the topic, choose the room pressure, and launch a timed AI panel discussion.</p>
+        </div>
+        <div className="setup-hero-stat">
+          <span>{numParticipants}</span>
+          <small>AI voices</small>
+        </div>
+      </div>
 
-      <div className="two-column-panel">
-        <div className="flat-card">
-          <form onSubmit={handleStart} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>DISCUSSION TOPIC</label>
+      <form onSubmit={handleStart} className="setup-studio-grid">
+        <aside className="setup-rail">
+          <div className="setup-step setup-step-active">
+            <span>01</span>
+            <div><strong>Topic</strong><small>{topic ? 'Selected' : 'Required'}</small></div>
+          </div>
+          <div className="setup-step">
+            <span>02</span>
+            <div><strong>Context</strong><small>{industryContext}</small></div>
+          </div>
+          <div className="setup-step">
+            <span>03</span>
+            <div><strong>Room</strong><small>{numParticipants} members · {duration} min</small></div>
+          </div>
+
+          <div className="setup-rail-note">
+            <Sparkles size={18} />
+            <p>Resume topics and live coaching use guarded Gemini calls to stay within free-tier limits.</p>
+          </div>
+        </aside>
+
+        <section className="setup-topic-board">
+          <div className="setup-panel-header">
+            <div>
+              <h2>Topic Workspace</h2>
+              <p>Start from a current prompt or write your own discussion statement.</p>
+            </div>
+          </div>
+
+          <div className="setup-field">
+            <label>Discussion Topic</label>
+            <div className="setup-topic-input">
               <input
-                className="input-field"
                 type="text"
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 placeholder="Enter custom discussion topic..."
                 required
               />
+              <Sparkles size={20} />
             </div>
+          </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)' }}>TRENDING TOPICS</span>
-              {renderTopicButtons(SUGGESTED_TOPICS, 'suggested')}
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Sparkles size={14} /> AI TOPICS FROM RESUME
-                </span>
+          <div className="setup-field">
+            <label>Trending Topics</label>
+            <div className="setup-topic-list">
+              {SUGGESTED_TOPICS.map((item, idx) => (
                 <button
+                  key={`sug-${idx}`}
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                  className="btn-secondary"
-                  style={{ padding: '8px 12px', fontSize: '0.82rem', borderRadius: '8px' }}
+                  onClick={() => setTopic(item)}
+                  className={`setup-topic-choice ${topic === item ? 'setup-topic-choice-active' : ''}`}
                 >
-                  {isUploading ? <><span className="spinning-icon"><RefreshCw size={14} /></span> Analyzing...</> : <><Upload size={14} /> Upload Resume</>}
+                  {item}
                 </button>
-                <input type="file" accept=".pdf,.txt" ref={fileInputRef} style={{ display: 'none' }} onChange={handleResumeUpload} />
-              </div>
-              {uploadError && <div style={{ fontSize: '0.8rem', color: 'var(--accent-red)' }}>{uploadError}</div>}
-              {resumeTopics.length > 0 && renderTopicButtons(resumeTopics, 'resume')}
+              ))}
             </div>
+          </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>INDUSTRY CONTEXT</label>
-              <select className="input-field" value={industryContext} onChange={(e) => setIndustryContext(e.target.value)}>
-                {INDUSTRY_CONTEXTS.map((ctx) => <option key={ctx} value={ctx}>{ctx}</option>)}
-              </select>
+          <div className="setup-resume-strip">
+            <div>
+              <strong><Sparkles size={15} /> AI topics from resume</strong>
+              <p>Upload PDF/TXT to generate role-specific discussion topics.</p>
             </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>AI PARTICIPANTS</label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                  {[2, 3, 4].map((num) => (
-                    <button key={num} type="button" onClick={() => setNumParticipants(num)} className={numParticipants === num ? 'btn-primary' : 'btn-secondary'} style={{ padding: '10px', borderRadius: '8px' }}>
-                      {num}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <label style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-muted)' }}>DURATION</label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                  {[2, 5, 10].map((m) => (
-                    <button key={m} type="button" onClick={() => setDuration(m)} className={duration === m ? 'btn-primary' : 'btn-secondary'} style={{ padding: '10px', borderRadius: '8px' }}>
-                      {m}m
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <button type="submit" disabled={isSubmitting} className="btn-primary" style={{ width: '100%', padding: '16px', fontSize: '1.05rem' }}>
-              <Play fill="white" size={18} />
-              {isSubmitting ? 'Starting...' : 'Enter Virtual GD Round'}
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="btn-secondary">
+              {isUploading ? <><span className="spinning-icon"><RefreshCw size={14} /></span> Analyzing...</> : <><Upload size={14} /> Upload</>}
             </button>
-          </form>
-        </div>
+            <input type="file" accept=".pdf,.txt" ref={fileInputRef} style={{ display: 'none' }} onChange={handleResumeUpload} />
+          </div>
 
-        <div className="flat-card" style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          <div>
-            <h2 style={{ fontSize: '1.25rem' }}>Current Round</h2>
-            <p style={{ marginTop: '4px' }}>{topic}</p>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <div className="flat-card" style={{ padding: '16px', borderRadius: '8px' }}>
-              <Users size={20} color="var(--primary)" />
-              <h3 style={{ marginTop: '8px' }}>{numParticipants} AI</h3>
-              <p style={{ fontSize: '0.86rem' }}>{industryContext}</p>
+          {uploadError && <div className="setup-error">{uploadError}</div>}
+          {resumeTopics.length > 0 && (
+            <div className="setup-field">
+              <label>Resume Suggestions</label>
+              {renderTopicButtons(resumeTopics, 'resume')}
             </div>
-            <div className="flat-card" style={{ padding: '16px', borderRadius: '8px' }}>
-              <Clock size={20} color="var(--primary)" />
-              <h3 style={{ marginTop: '8px' }}>{duration} min</h3>
-              <p style={{ fontSize: '0.86rem' }}>Timed round</p>
+          )}
+        </section>
+
+        <aside className="setup-launch-dock">
+          <div className="setup-panel-header">
+            <div>
+              <h2>Round Settings</h2>
+              <p>Tune the challenge level before launch.</p>
             </div>
           </div>
-        </div>
-      </div>
+
+          <div className="setup-field">
+            <label>Industry Context</label>
+            <select className="input-field" value={industryContext} onChange={(e) => setIndustryContext(e.target.value)}>
+              {INDUSTRY_CONTEXTS.map((ctx) => <option key={ctx} value={ctx}>{ctx}</option>)}
+            </select>
+          </div>
+
+          <div className="setup-field">
+            <label>AI Participants</label>
+            <div className="setup-segmented">
+              {[2, 3, 4].map((num) => (
+                <button key={num} type="button" onClick={() => setNumParticipants(num)} className={numParticipants === num ? 'is-active' : ''}>
+                  <Users size={16} /> {num}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setup-field">
+            <label>Duration</label>
+            <div className="setup-segmented">
+              {[2, 5, 10].map((m) => (
+                <button key={m} type="button" onClick={() => setDuration(m)} className={duration === m ? 'is-active' : ''}>
+                  <Clock size={16} /> {m}m
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="setup-preview-card">
+            <span>Current brief</span>
+            <h3>{topic}</h3>
+            <div>
+              <small>{industryContext}</small>
+              <small>{numParticipants} AI · {duration} min</small>
+            </div>
+          </div>
+
+          <button type="submit" disabled={isSubmitting} className="btn-primary setup-launch-button">
+            <Play fill="white" size={18} />
+            {isSubmitting ? 'Starting...' : 'Enter Virtual GD Round'}
+          </button>
+        </aside>
+      </form>
     </>
   );
 

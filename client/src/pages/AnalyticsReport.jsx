@@ -1,8 +1,67 @@
-import React from 'react';
-import { ArrowLeft, Award, Zap, Smile, BookOpen, Clock, Activity, MessageSquare, AlertCircle, Camera, ArrowRight } from 'lucide-react';
+import { ArrowLeft, Award, Zap, Smile, MessageSquare, Camera, ArrowRight } from 'lucide-react';
+
+const asScore = (value) => Math.max(0, Math.min(100, Number(value) || 0));
+
+// Render a clean circular gauge using SVG
+const CircularGauge = ({ score, label, color, icon: Icon }) => {
+  const safeScore = asScore(score);
+  const radius = 40;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (safeScore / 100) * circumference;
+
+  return (
+    <div className="flat-card" style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      textAlign: 'center',
+      padding: '20px',
+      flex: 1,
+      minWidth: '180px'
+    }}>
+      <div style={{ position: 'relative', width: '100px', height: '100px', marginBottom: '12px' }}>
+        <svg style={{ transform: 'rotate(-90deg)', width: '100px', height: '100px' }}>
+          <circle
+            cx="50"
+            cy="50"
+            r={radius}
+            stroke="rgba(255,255,255,0.05)"
+            strokeWidth="8"
+            fill="transparent"
+          />
+          <circle
+            cx="50"
+            cy="50"
+            r={radius}
+            stroke={color}
+            strokeWidth="8"
+            fill="transparent"
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 1s ease-out' }}
+          />
+        </svg>
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center'
+        }}>
+          <Icon size={18} style={{ color, marginBottom: '2px' }} />
+          <span style={{ fontSize: '1.4rem', fontWeight: 800 }}>{safeScore}</span>
+        </div>
+      </div>
+      <span style={{ fontSize: '0.85rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</span>
+    </div>
+  );
+};
 
 export default function AnalyticsReport({ session, onBack }) {
-  if (!session || !session.aiEvaluation) {
+  if (!session) {
     return (
       <div className="flat-card" style={{ maxWidth: '600px', margin: '100px auto', padding: '40px', textAlign: 'center' }}>
         <h2>Loading Analytics...</h2>
@@ -14,63 +73,25 @@ export default function AnalyticsReport({ session, onBack }) {
     );
   }
 
-  const { aiEvaluation, userMetrics, participationBreakdown, topic, durationLimit } = session;
+  const {
+    aiEvaluation = {},
+    userMetrics = {},
+    participationBreakdown = [],
+    topic = 'Untitled discussion',
+    durationLimit = 0
+  } = session;
 
-  // Render a clean circular gauge using SVG
-  const CircularGauge = ({ score, label, color, icon: Icon }) => {
-    const radius = 40;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - (score / 100) * circumference;
-
-    return (
-      <div className="flat-card" style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        textAlign: 'center',
-        padding: '20px',
-        flex: 1,
-        minWidth: '180px'
-      }}>
-        <div style={{ position: 'relative', width: '100px', height: '100px', marginBottom: '12px' }}>
-          <svg style={{ transform: 'rotate(-90deg)', width: '100px', height: '100px' }}>
-            <circle
-              cx="50"
-              cy="50"
-              r={radius}
-              stroke="rgba(255,255,255,0.05)"
-              strokeWidth="8"
-              fill="transparent"
-            />
-            <circle
-              cx="50"
-              cy="50"
-              r={radius}
-              stroke={color}
-              strokeWidth="8"
-              fill="transparent"
-              strokeDasharray={circumference}
-              strokeDashoffset={strokeDashoffset}
-              strokeLinecap="round"
-              style={{ transition: 'stroke-dashoffset 1s ease-out' }}
-            />
-          </svg>
-          <div style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center'
-          }}>
-            <Icon size={18} style={{ color, marginBottom: '2px' }} />
-            <span style={{ fontSize: '1.4rem', fontWeight: 800 }}>{score}</span>
-          </div>
-        </div>
-        <span style={{ fontSize: '0.85rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</span>
-      </div>
-    );
+  const report = {
+    leadershipScore: asScore(aiEvaluation.leadershipScore),
+    confidenceScore: asScore(aiEvaluation.confidenceScore),
+    effectivenessScore: asScore(aiEvaluation.effectivenessScore),
+    analysisSummary: aiEvaluation.analysisSummary || 'The coaching report is still being prepared.',
+    strengths: Array.isArray(aiEvaluation.strengths) ? aiEvaluation.strengths : [],
+    weaknesses: Array.isArray(aiEvaluation.weaknesses) ? aiEvaluation.weaknesses : [],
+    actionableTips: Array.isArray(aiEvaluation.actionableTips) ? aiEvaluation.actionableTips : [],
+    topicRelevance: aiEvaluation.topicRelevance || 'Topic relevance was not available for this session.',
+    argumentDepth: aiEvaluation.argumentDepth || 'Argument depth was not available for this session.',
+    suggestedPhrases: Array.isArray(aiEvaluation.suggestedPhrases) ? aiEvaluation.suggestedPhrases : []
   };
 
   // Determine speaking rate assessment
@@ -80,7 +101,7 @@ export default function AnalyticsReport({ session, onBack }) {
     return { label: 'Conversational (Ideal)', color: 'var(--accent-green)' };
   };
 
-  const pacingInfo = getPacingText(userMetrics.pacingWpm);
+  const pacingInfo = getPacingText(userMetrics.pacingWpm || 0);
 
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '30px 20px' }}>
@@ -113,7 +134,7 @@ export default function AnalyticsReport({ session, onBack }) {
           <div>
             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>OVERALL COHERENCE</div>
             <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--accent-green)' }}>
-              {Math.round((aiEvaluation.leadershipScore + aiEvaluation.confidenceScore + aiEvaluation.effectivenessScore) / 3)}%
+              {Math.round((report.leadershipScore + report.confidenceScore + report.effectivenessScore) / 3)}%
             </div>
           </div>
         </div>
@@ -121,9 +142,9 @@ export default function AnalyticsReport({ session, onBack }) {
 
       {/* Grid: 4 Core Gauges */}
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '30px' }}>
-        <CircularGauge score={aiEvaluation.leadershipScore} label="Leadership presence" color="#c084fc" icon={Award} />
-        <CircularGauge score={aiEvaluation.confidenceScore} label="Confidence Index" color="#22d3ee" icon={Zap} />
-        <CircularGauge score={aiEvaluation.effectivenessScore} label="Communication Effectiveness" color="#34d399" icon={Smile} />
+        <CircularGauge score={report.leadershipScore} label="Leadership presence" color="#c084fc" icon={Award} />
+        <CircularGauge score={report.confidenceScore} label="Confidence Index" color="#22d3ee" icon={Zap} />
+        <CircularGauge score={report.effectivenessScore} label="Communication Effectiveness" color="#34d399" icon={Smile} />
         <CircularGauge score={userMetrics.bodyLanguageScore || 0} label="Visual Presence" color="#f59e0b" icon={Camera} />
       </div>
 
@@ -138,7 +159,7 @@ export default function AnalyticsReport({ session, onBack }) {
               Executive Coach Summary
             </h2>
             <p style={{ fontSize: '1.05rem', lineHeight: '1.6', color: 'var(--text-main)' }}>
-              "{aiEvaluation.analysisSummary}"
+              "{report.analysisSummary}"
             </p>
           </div>
 
@@ -151,7 +172,7 @@ export default function AnalyticsReport({ session, onBack }) {
                 Key Strengths
               </h3>
               <ul style={{ paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {aiEvaluation.strengths.map((str, idx) => (
+                {report.strengths.map((str, idx) => (
                   <li key={idx} style={{ fontSize: '0.9rem', color: 'var(--text-main)', lineHeight: '1.4' }}>{str}</li>
                 ))}
               </ul>
@@ -163,7 +184,7 @@ export default function AnalyticsReport({ session, onBack }) {
                 Areas for Friction
               </h3>
               <ul style={{ paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {aiEvaluation.weaknesses.map((weak, idx) => (
+                {report.weaknesses.map((weak, idx) => (
                   <li key={idx} style={{ fontSize: '0.9rem', color: 'var(--text-main)', lineHeight: '1.4' }}>{weak}</li>
                 ))}
               </ul>
@@ -177,7 +198,7 @@ export default function AnalyticsReport({ session, onBack }) {
               Actionable Coaching Tips
             </h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {aiEvaluation.actionableTips.map((tip, idx) => (
+              {report.actionableTips.map((tip, idx) => (
                 <div key={idx} style={{
                   background: 'rgba(255,255,255,0.02)',
                   border: '1px solid var(--border-color)',
@@ -215,11 +236,11 @@ export default function AnalyticsReport({ session, onBack }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <div>
                 <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--secondary)', marginBottom: '4px' }}>Topic Relevance</h4>
-                <p style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{aiEvaluation.topicRelevance}</p>
+                <p style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{report.topicRelevance}</p>
               </div>
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '15px' }}>
                 <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--secondary)', marginBottom: '4px' }}>Argument Depth & Structure</h4>
-                <p style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{aiEvaluation.argumentDepth}</p>
+                <p style={{ fontSize: '0.9rem', lineHeight: '1.4' }}>{report.argumentDepth}</p>
               </div>
             </div>
           </div>
@@ -303,7 +324,7 @@ export default function AnalyticsReport({ session, onBack }) {
       </div>
 
       {/* Suggested phrasing comparison section */}
-      {aiEvaluation.suggestedPhrases && aiEvaluation.suggestedPhrases.length > 0 && (
+      {report.suggestedPhrases.length > 0 && (
         <div className="glass-card" style={{ marginTop: '30px' }}>
           <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
             <MessageSquare style={{ color: 'var(--primary)', fill: 'var(--primary)', fillOpacity: 0.2 }} />
@@ -311,7 +332,7 @@ export default function AnalyticsReport({ session, onBack }) {
           </h2>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {aiEvaluation.suggestedPhrases.map((phrase, idx) => (
+            {report.suggestedPhrases.map((phrase, idx) => (
               <div key={idx} style={{
                 background: 'var(--bg-main)',
                 border: '1px solid var(--border-color)',

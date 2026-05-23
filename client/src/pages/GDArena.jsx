@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, ShieldAlert, Camera, CameraOff } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, ShieldAlert, Camera, CameraOff, Play, Pause, Square } from 'lucide-react';
 import Webcam from 'react-webcam';
 import { io } from 'socket.io-client';
 
@@ -9,6 +9,41 @@ const AI_MEMBERS = [
   { name: 'Leo', role: 'The Harmonizer', color: '#10b981', initialIntro: 'It is wonderful to be discussing this. Let\'s remember to hear everyone out and try to find a collaborative balance.', prompt: 'You are encouraging, supportive, bridge opposing ideas, and summarize points to build consensus.' },
   { name: 'Kabir', role: 'The Skeptic', color: '#f59e0b', initialIntro: 'Before we jump to conclusions, I want to challenge the core assumption we are basing this whole premise on.', prompt: 'You play devil\'s advocate, raise doubts, question assertions, and demand logical backing.' }
 ];
+
+const VOICE_PROFILES = {
+  Sam: {
+    rate: 1.14,
+    pitch: 0.82,
+    voiceHints: ['Microsoft David', 'Google US English', 'Male', 'Daniel']
+  },
+  Meera: {
+    rate: 0.98,
+    pitch: 1.12,
+    voiceHints: ['Microsoft Zira', 'Google UK English Female', 'Female', 'Samantha']
+  },
+  Leo: {
+    rate: 0.92,
+    pitch: 1.04,
+    voiceHints: ['Google US English', 'Microsoft Jenny', 'Female', 'Karen']
+  },
+  Kabir: {
+    rate: 1.02,
+    pitch: 0.9,
+    voiceHints: ['Microsoft Mark', 'Google UK English Male', 'Male', 'Alex']
+  },
+  'HR Moderator': {
+    rate: 0.96,
+    pitch: 0.78,
+    voiceHints: ['Microsoft David', 'Google UK English Male', 'Male']
+  }
+};
+
+const selectVoice = (voices, speakerName) => {
+  const hints = VOICE_PROFILES[speakerName]?.voiceHints || [];
+  return hints
+    .map(hint => voices.find(voice => voice.name.includes(hint)))
+    .find(Boolean) || voices.find(voice => voice.lang?.startsWith('en')) || voices[0];
+};
 
 const scoreLocalContribution = (transcript, userMetrics) => {
   const userText = transcript
@@ -51,11 +86,22 @@ const scoreLocalContribution = (transcript, userMetrics) => {
 };
 
 export default function GDArena({ session, onComplete }) {
-  const activeAIMembers = AI_MEMBERS.slice(0, session.numParticipants || 4);
-  const [timeLeft, setTimeLeft] = useState(session.durationLimit * 60);
+  const currentSession = session || {
+    _id: 'missing_session',
+    topic: 'Untitled discussion',
+    durationLimit: 2,
+    numParticipants: 4,
+    industryContext: 'General / Academic'
+  };
+  const activeAIMembers = useMemo(
+    () => AI_MEMBERS.slice(0, currentSession.numParticipants || 4),
+    [currentSession.numParticipants]
+  );
+  const [timeLeft, setTimeLeft] = useState(Number(currentSession.durationLimit || 2) * 60);
   const [transcript, setTranscript] = useState([]);
   const [activeSpeaker, setActiveSpeaker] = useState('System');
-  const [discussionState, setDiscussionState] = useState('starting'); // starting, ongoing, finished, analyzing
+  const [activeSpeechText, setActiveSpeechText] = useState('');
+  const [discussionState, setDiscussionState] = useState('idle'); // idle, ongoing, paused, analyzing
   const [isMuted, setIsMuted] = useState(false); // AI Speech Synthesis toggle
   const [isMicActive, setIsMicActive] = useState(false);
   const [interruptionAlert, setInterruptionAlert] = useState(false);
@@ -69,15 +115,13 @@ export default function GDArena({ session, onComplete }) {
   const [aiSpeakingTimes, setAiSpeakingTimes] = useState({ Sam: 0, Meera: 0, Leo: 0, Kabir: 0 });
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [bodyLanguageScore, setBodyLanguageScore] = useState(85);
-  const [liveAnalysis, setLiveAnalysis] = useState({
-    summary: 'Waiting for your first contribution.',
-    relevanceScore: 0,
-    clarityScore: 0,
-    nextMove: 'Join the discussion with a clear point, example, and link back to the topic.',
-    rateLimit: null
-  });
-  const [isLiveAnalysisLoading, setIsLiveAnalysisLoading] = useState(false);
   const [aiRateStatus, setAiRateStatus] = useState(null);
+  const [speechVoices, setSpeechVoices] = useState([]);
+
+  const authHeaders = () => {
+    const token = localStorage.getItem('gd_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
 
   // Web Speech references
   const recognitionRef = useRef(null);
@@ -89,9 +133,11 @@ export default function GDArena({ session, onComplete }) {
   const trackingTimerRef = useRef(null);
   const socketRef = useRef(null);
   const aiResponseInFlightRef = useRef(false);
+  const hasRoundStartedRef = useRef(false);
   const lastModerationTurnRef = useRef(0);
-  const lastLiveAnalysisAtRef = useRef(0);
-  const lastLiveAnalysisTurnRef = useRef(0);
+  const latestRoundRef = useRef({});
+  const submitSpeechRef = useRef(null);
+  const discussionStateRef = useRef('idle');
 
   // Auto scroll transcript panel
   const transcriptEndRef = useRef(null);
@@ -102,6 +148,55 @@ export default function GDArena({ session, onComplete }) {
       transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [transcript]);
+
+  useEffect(() => {
+    latestRoundRef.current = {
+      transcript,
+      userSpeakingTime,
+      userInterruptionCount,
+      userInterruptedCount,
+      fillerWordsCount,
+      aiSpeakingTimes,
+      isVideoActive,
+      bodyLanguageScore,
+      activeAIMembers
+    };
+  }, [
+    transcript,
+    userSpeakingTime,
+    userInterruptionCount,
+    userInterruptedCount,
+    fillerWordsCount,
+    aiSpeakingTimes,
+    isVideoActive,
+    bodyLanguageScore,
+    activeAIMembers
+  ]);
+
+  useEffect(() => {
+    submitSpeechRef.current = handleUserSpeechSubmitted;
+  });
+
+  useEffect(() => {
+    discussionStateRef.current = discussionState;
+  }, [discussionState]);
+
+  useEffect(() => {
+    const loadVoices = () => {
+      setSpeechVoices(window.speechSynthesis?.getVoices?.() || []);
+    };
+
+    loadVoices();
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    return () => {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
+  }, []);
 
   // Clean speech synthesis on unmount
   useEffect(() => {
@@ -119,7 +214,9 @@ export default function GDArena({ session, onComplete }) {
   useEffect(() => {
     const fetchAIStatus = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/sessions/ai/status');
+        const res = await fetch('http://localhost:5000/api/sessions/ai/status', {
+          headers: authHeaders()
+        });
         if (res.ok) {
           setAiRateStatus(await res.json());
         }
@@ -136,7 +233,7 @@ export default function GDArena({ session, onComplete }) {
   // Socket.io initialization
   useEffect(() => {
     socketRef.current = io('http://localhost:5000');
-    socketRef.current.emit('join-room', session._id);
+    socketRef.current.emit('join-room', currentSession._id);
 
     socketRef.current.on('receive-message', (message) => {
       setTranscript(prev => {
@@ -153,7 +250,7 @@ export default function GDArena({ session, onComplete }) {
     return () => {
       if (socketRef.current) socketRef.current.disconnect();
     };
-  }, [session._id]);
+  }, [currentSession._id]);
 
   // Initialize Speech Synthesis and Recognition
   useEffect(() => {
@@ -179,7 +276,7 @@ export default function GDArena({ session, onComplete }) {
         const lastResultIndex = event.results.length - 1;
         const text = event.results[lastResultIndex][0].transcript.trim();
         if (text) {
-          handleUserSpeechSubmitted(text);
+          submitSpeechRef.current?.(text);
         }
       };
 
@@ -192,34 +289,26 @@ export default function GDArena({ session, onComplete }) {
     }
   }, []);
 
-  // Discussion Round Orchestrator State Machine
+  // Countdown clock: only runs while the GD is actively ongoing.
   useEffect(() => {
-    if (discussionState === 'starting') {
-      // Add initial System welcome transcript
-      appendTranscript('System', `The Group Discussion round is starting. Topic: "${session.topic}". Duration: ${session.durationLimit} minutes.`);
-      
-      // Countdown Timer
-      countdownTimerRef.current = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(countdownTimerRef.current);
-            if (!conversationEndTriggeredRef.current) {
-              handleEndDiscussion();
-            }
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    clearInterval(countdownTimerRef.current);
 
-      // Start the discussion with an AI introducing
-      autoSpeechQueueRef.current = setTimeout(() => {
-        setDiscussionState('ongoing');
-        // Let an active AI initiate the discussion
-        const firstSpeaker = activeAIMembers[Math.floor(Math.random() * activeAIMembers.length)];
-        triggerAISpeech(firstSpeaker.name, firstSpeaker.initialIntro);
-      }, 3000);
-    }
+    if (discussionState !== 'ongoing') return undefined;
+
+    countdownTimerRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(countdownTimerRef.current);
+          if (!conversationEndTriggeredRef.current) {
+            handleEndDiscussion();
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(countdownTimerRef.current);
   }, [discussionState]);
 
   // Speaking time counters
@@ -258,11 +347,16 @@ export default function GDArena({ session, onComplete }) {
     if (discussionState === 'ongoing' && activeSpeaker === 'System') {
       // If the discussion floor is back to 'System' (idle), let an AI pick up the thread after a small delay
       clearTimeout(autoSpeechQueueRef.current);
+      const quotaDelay = aiRateStatus?.enabled
+        ? Math.max(0, aiRateStatus.nextAllowedInMs || 0)
+        : 0;
+      const turnDelay = Math.max(4000, quotaDelay + 800);
+
       autoSpeechQueueRef.current = setTimeout(() => {
         triggerNextAISpeaker();
-      }, 4000);
+      }, turnDelay);
     }
-  }, [activeSpeaker, discussionState]);
+  }, [activeSpeaker, discussionState, aiRateStatus]);
 
   // Simulated Webcam Tracking Loop
   useEffect(() => {
@@ -281,7 +375,7 @@ export default function GDArena({ session, onComplete }) {
   }, [discussionState, isVideoActive]);
 
   // Append entry to transcript
-  const appendTranscript = (speaker, text, isInterrupted = false, isRemote = false) => {
+  function appendTranscript(speaker, text, isInterrupted = false, isRemote = false) {
     const newMessage = {
       id: Date.now() + Math.random(),
       speaker,
@@ -293,20 +387,21 @@ export default function GDArena({ session, onComplete }) {
     setTranscript(prev => [...prev, newMessage]);
 
     if (!isRemote && socketRef.current) {
-      socketRef.current.emit('send-message', { roomId: session._id, message: newMessage });
+      socketRef.current.emit('send-message', { roomId: currentSession._id, message: newMessage });
     }
   };
 
   // Synchronize Active Speaker via Socket
-  const setAndSyncActiveSpeaker = (speaker) => {
+  function setAndSyncActiveSpeaker(speaker) {
     setActiveSpeaker(speaker);
+    if (speaker === 'System') setActiveSpeechText('');
     if (socketRef.current) {
-      socketRef.current.emit('sync-state', { roomId: session._id, state: { activeSpeaker: speaker } });
+      socketRef.current.emit('sync-state', { roomId: currentSession._id, state: { activeSpeaker: speaker } });
     }
   };
 
   // Speaks text via Browser SpeechSynthesis
-  const speakOutLoud = (speakerName, text, onEndCallback) => {
+  function speakOutLoud(speakerName, text, onEndCallback) {
     window.speechSynthesis.cancel(); // cancel any active speaking
 
     if (isMuted) {
@@ -316,31 +411,15 @@ export default function GDArena({ session, onComplete }) {
     }
 
     const utterance = new SpeechSynthesisUtterance(text);
+    const profile = VOICE_PROFILES[speakerName] || VOICE_PROFILES.Kabir;
+    utterance.rate = profile.rate;
+    utterance.pitch = profile.pitch;
+    utterance.volume = 1;
     
     // Choose appropriate voice profiles
-    const voices = window.speechSynthesis.getVoices();
+    const voices = speechVoices.length ? speechVoices : window.speechSynthesis.getVoices();
     if (voices.length > 0) {
-      if (speakerName === 'Sam') {
-        utterance.voice = voices.find(v => v.name.includes('Google US English') || v.name.includes('Male')) || voices[0];
-        utterance.rate = 1.15; // fast speaker
-        utterance.pitch = 0.9;
-      } else if (speakerName === 'Meera') {
-        utterance.voice = voices.find(v => v.name.includes('Google UK English Female') || v.name.includes('Female')) || voices[0];
-        utterance.rate = 1.0; 
-        utterance.pitch = 1.05;
-      } else if (speakerName === 'Leo') {
-        utterance.voice = voices.find(v => v.name.includes('Google US English') || v.name.includes('Female')) || voices[0];
-        utterance.rate = 0.95; // calm, deliberate
-        utterance.pitch = 1.1;
-      } else if (speakerName === 'HR Moderator') {
-        utterance.voice = voices.find(v => v.name.includes('Google UK English Male') || v.name.includes('Male')) || voices[0];
-        utterance.rate = 1.0;
-        utterance.pitch = 0.8; // Authoritative
-      } else { // Kabir
-        utterance.voice = voices.find(v => v.name.includes('Male')) || voices[0];
-        utterance.rate = 1.05;
-        utterance.pitch = 0.95;
-      }
+      utterance.voice = selectVoice(voices, speakerName);
     }
 
     utterance.onend = () => {
@@ -356,8 +435,9 @@ export default function GDArena({ session, onComplete }) {
   };
 
   // Triggers an AI member's dialogue turn
-  const triggerAISpeech = (aiName, rawText) => {
+  function triggerAISpeech(aiName, rawText) {
     setAndSyncActiveSpeaker(aiName);
+    setActiveSpeechText(rawText);
     appendTranscript(aiName, rawText);
     
     speakOutLoud(aiName, rawText, () => {
@@ -366,67 +446,9 @@ export default function GDArena({ session, onComplete }) {
     });
   };
 
-  const buildCurrentUserMetrics = (nextTranscript = transcript) => {
-    const totalSpeaks = userSpeakingTime + Object.values(aiSpeakingTimes).reduce((a, b) => a + b, 0);
-    const userPct = totalSpeaks > 0 ? Math.round((userSpeakingTime / totalSpeaks) * 100) : 0;
-    const userWords = nextTranscript
-      .filter(t => t.speaker === 'User')
-      .map(t => t.text.split(/\s+/).filter(Boolean).length)
-      .reduce((a, b) => a + b, 0);
-
-    return {
-      speakingTime: userSpeakingTime,
-      speakPercentage: userPct,
-      interruptionCount: userInterruptionCount,
-      interruptedCount: userInterruptedCount,
-      pacingWpm: userSpeakingTime > 0 ? Math.round((userWords / userSpeakingTime) * 60) : 0,
-      fillerWordCount: fillerWordsCount,
-      bodyLanguageScore: isVideoActive ? bodyLanguageScore : 0
-    };
-  };
-
-  const requestLiveAnalysis = async (nextTranscript) => {
-    const userTurns = nextTranscript.filter(t => t.speaker === 'User').length;
-    const now = Date.now();
-
-    if (userTurns === 0) return;
-    if (userTurns === lastLiveAnalysisTurnRef.current) return;
-    if (now - lastLiveAnalysisAtRef.current < 20000 && userTurns < lastLiveAnalysisTurnRef.current + 2) return;
-
-    lastLiveAnalysisTurnRef.current = userTurns;
-    lastLiveAnalysisAtRef.current = now;
-    setIsLiveAnalysisLoading(true);
-
-    try {
-      const res = await fetch('http://localhost:5000/api/sessions/live-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: session.topic,
-          transcript: nextTranscript.map(t => ({ speaker: t.speaker, text: t.text })),
-          userMetrics: buildCurrentUserMetrics(nextTranscript)
-        })
-      });
-
-      if (!res.ok) throw new Error('Live analysis unavailable');
-      const data = await res.json();
-      setLiveAnalysis(data);
-      if (data.rateLimit) setAiRateStatus(data.rateLimit);
-    } catch (err) {
-      console.warn('Live analysis fallback:', err.message);
-      setLiveAnalysis(prev => ({
-        ...prev,
-        summary: 'Local metrics updated. Keep your next point concise and evidence-backed.',
-        nextMove: 'Use: I agree/disagree because... For example... Therefore...'
-      }));
-    } finally {
-      setIsLiveAnalysisLoading(false);
-    }
-  };
-
   // Selects which AI participant speaks next based on current transcript context
-  const triggerNextAISpeaker = async () => {
-    if (discussionState !== 'ongoing') return;
+  async function triggerNextAISpeaker() {
+    if (discussionStateRef.current !== 'ongoing') return;
     if (aiResponseInFlightRef.current) return;
 
     aiResponseInFlightRef.current = true;
@@ -437,8 +459,8 @@ export default function GDArena({ session, onComplete }) {
         lastModerationTurnRef.current = transcript.length;
         const res = await fetch(`http://localhost:5000/api/sessions/moderate`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: session.topic, transcript })
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ topic: currentSession.topic, transcript })
         });
         if (res.ok) {
           const data = await res.json();
@@ -473,13 +495,13 @@ export default function GDArena({ session, onComplete }) {
     try {
       const res = await fetch('http://localhost:5000/api/sessions/generate-response', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
-          topic: session.topic,
+          topic: currentSession.topic,
           transcript: transcript.map(t => ({ speaker: t.speaker, text: t.text })),
           speakerName: nextAI.name,
           personaPrompt: nextAI.prompt,
-          industryContext: session.industryContext
+          industryContext: currentSession.industryContext
         })
       });
 
@@ -487,14 +509,14 @@ export default function GDArena({ session, onComplete }) {
       const data = await res.json();
       
       // Make sure we didn't transition state during loading
-      if (discussionState === 'ongoing') {
+      if (discussionStateRef.current === 'ongoing') {
         triggerAISpeech(nextAI.name, data.text);
         if (data.rateLimit) setAiRateStatus(data.rateLimit);
       }
     } catch {
       console.warn('Offline response generation fallback for', nextAI.name);
       // fallback local content
-      if (discussionState === 'ongoing') {
+      if (discussionStateRef.current === 'ongoing') {
         const fallbacks = [
           "I think we need to look at the structural facts of this situation rather than emotional arguments.",
           "Absolutely, I completely agree with that perspective. However, let's also account for implementation limits.",
@@ -509,7 +531,7 @@ export default function GDArena({ session, onComplete }) {
   };
 
   // Interruption Logic: trigger when user speaks
-  const checkInterruption = () => {
+  function checkInterruption() {
     // If an AI participant is actively speaking when user starts talking, cancel TTS and log Interruption!
     if (window.speechSynthesis.speaking && activeAIMembers.some(ai => ai.name === activeSpeaker)) {
       window.speechSynthesis.cancel();
@@ -532,8 +554,8 @@ export default function GDArena({ session, onComplete }) {
   };
 
   // Handles User Speech Submission (from Mic STT or Chat Text Box)
-  const handleUserSpeechSubmitted = (text) => {
-    if (discussionState !== 'ongoing') return;
+  function handleUserSpeechSubmitted(text) {
+    if (discussionStateRef.current !== 'ongoing') return;
     
     // Check if user interrupted someone
     const didInterrupt = checkInterruption();
@@ -550,28 +572,22 @@ export default function GDArena({ session, onComplete }) {
       setFillerWordsCount(prev => prev + detectedFillers);
     }
 
-    const userMessage = {
-      id: Date.now() + Math.random(),
-      speaker: 'User',
-      text,
-      timestamp: new Date(),
-      isInterrupted: didInterrupt
-    };
-    const nextTranscript = [...transcript, userMessage];
-
     appendTranscript('User', text, didInterrupt);
     setActiveSpeaker('User');
-    requestLiveAnalysis(nextTranscript);
+    setActiveSpeechText(text);
 
     // Give user the floor for a short silence detection
     clearTimeout(autoSpeechQueueRef.current);
     autoSpeechQueueRef.current = setTimeout(() => {
       setActiveSpeaker('System'); // Floor returns to system idle, trigger next AI
+      setActiveSpeechText('');
     }, 3500);
   };
 
   // Controls user microphone speech recognition
-  const toggleMic = () => {
+  function toggleMic() {
+    if (discussionStateRef.current !== 'ongoing') return;
+
     if (!recognitionRef.current) {
       alert('Speech Recognition is not supported by your browser or microphone is blocked. Please use the visual Text Fallback Box below to type your arguments.');
       return;
@@ -588,15 +604,68 @@ export default function GDArena({ session, onComplete }) {
   };
 
   // Submits text fallback message
-  const handleTextSubmit = (e) => {
+  function handleTextSubmit(e) {
     e.preventDefault();
     if (!textInput.trim()) return;
+    if (discussionStateRef.current !== 'ongoing') return;
     handleUserSpeechSubmitted(textInput.trim());
     setTextInput('');
   };
 
+  function handleStartRound() {
+    if (discussionState === 'ongoing' || discussionState === 'analyzing') return;
+
+    clearTimeout(autoSpeechQueueRef.current);
+    window.speechSynthesis.cancel();
+
+    if (!hasRoundStartedRef.current) {
+      hasRoundStartedRef.current = true;
+      appendTranscript('System', `The Group Discussion round is starting. Topic: "${currentSession.topic}". Duration: ${currentSession.durationLimit} minutes.`);
+      setActiveSpeechText('');
+      setAndSyncActiveSpeaker('System');
+
+      autoSpeechQueueRef.current = setTimeout(() => {
+        if (discussionStateRef.current !== 'ongoing') return;
+        const firstSpeaker = activeAIMembers[Math.floor(Math.random() * activeAIMembers.length)] || activeAIMembers[0];
+        if (firstSpeaker) triggerAISpeech(firstSpeaker.name, firstSpeaker.initialIntro);
+      }, 900);
+    }
+
+    setDiscussionState('ongoing');
+  }
+
+  function handlePauseRound() {
+    if (discussionState !== 'ongoing') return;
+
+    clearTimeout(autoSpeechQueueRef.current);
+    clearInterval(countdownTimerRef.current);
+    window.speechSynthesis.cancel();
+    recognitionRef.current?.stop?.();
+    aiResponseInFlightRef.current = false;
+    setActiveSpeechText('');
+    setAndSyncActiveSpeaker('Paused');
+    setDiscussionState('paused');
+  }
+
+  function handleStopRound() {
+    handleEndDiscussion();
+  }
+
+  function handleToggleMute() {
+    setIsMuted((prev) => {
+      const nextMuted = !prev;
+      if (nextMuted) {
+        window.speechSynthesis.cancel();
+        if (activeAIMembers.some(ai => ai.name === activeSpeaker)) {
+          setAndSyncActiveSpeaker('System');
+        }
+      }
+      return nextMuted;
+    });
+  };
+
   // Triggered when GD finishes
-  const handleEndDiscussion = async () => {
+  async function handleEndDiscussion() {
     if (conversationEndTriggeredRef.current) return;
     conversationEndTriggeredRef.current = true;
 
@@ -607,51 +676,62 @@ export default function GDArena({ session, onComplete }) {
     clearInterval(activeAITimerRef.current);
     clearTimeout(autoSpeechQueueRef.current);
 
-    // Calculate final metrics
-    const totalSpeaks = userSpeakingTime + Object.values(aiSpeakingTimes).reduce((a, b) => a + b, 0);
-    const userPct = totalSpeaks > 0 ? Math.round((userSpeakingTime / totalSpeaks) * 100) : 0;
+    const latest = latestRoundRef.current || {};
+    const finalTranscript = latest.transcript || transcript;
+    const finalUserSpeakingTime = latest.userSpeakingTime ?? userSpeakingTime;
+    const finalUserInterruptionCount = latest.userInterruptionCount ?? userInterruptionCount;
+    const finalUserInterruptedCount = latest.userInterruptedCount ?? userInterruptedCount;
+    const finalFillerWordsCount = latest.fillerWordsCount ?? fillerWordsCount;
+    const finalAiSpeakingTimes = latest.aiSpeakingTimes || aiSpeakingTimes;
+    const finalIsVideoActive = latest.isVideoActive ?? isVideoActive;
+    const finalBodyLanguageScore = latest.bodyLanguageScore ?? bodyLanguageScore;
+    const finalActiveAIMembers = latest.activeAIMembers || activeAIMembers;
+
+    // Calculate final metrics from the latest refs so timer/mic callbacks do not close over stale state.
+    const totalSpeaks = finalUserSpeakingTime + Object.values(finalAiSpeakingTimes).reduce((a, b) => a + b, 0);
+    const userPct = totalSpeaks > 0 ? Math.round((finalUserSpeakingTime / totalSpeaks) * 100) : 0;
     
     // Estimate WPM based on transcript word count / speaking time
-    const userWords = transcript
+    const userWords = finalTranscript
       .filter(t => t.speaker === 'User')
       .map(t => t.text.split(' ').length)
       .reduce((a, b) => a + b, 0);
-    const pacingWpm = userSpeakingTime > 0 ? Math.round((userWords / userSpeakingTime) * 60) : 0;
+    const pacingWpm = finalUserSpeakingTime > 0 ? Math.round((userWords / finalUserSpeakingTime) * 60) : 0;
 
     const userMetrics = {
-      speakingTime: userSpeakingTime,
+      speakingTime: finalUserSpeakingTime,
       speakPercentage: userPct,
-      interruptionCount: userInterruptionCount,
-      interruptedCount: userInterruptedCount,
+      interruptionCount: finalUserInterruptionCount,
+      interruptedCount: finalUserInterruptedCount,
       pacingWpm: pacingWpm || 120, // ideal default in case they typed
-      fillerWordCount: fillerWordsCount,
-      bodyLanguageScore: isVideoActive ? bodyLanguageScore : 0
+      fillerWordCount: finalFillerWordsCount,
+      bodyLanguageScore: finalIsVideoActive ? finalBodyLanguageScore : 0
     };
 
     // Calculate dynamic breakdowns
-    const activeNames = activeAIMembers.map(a => a.name);
+    const activeNames = finalActiveAIMembers.map(a => a.name);
     let aiTotal = 0;
-    activeNames.forEach(n => aiTotal += (aiSpeakingTimes[n] || 0));
-    const totalTimes = userSpeakingTime + aiTotal || 1;
+    activeNames.forEach(n => aiTotal += (finalAiSpeakingTimes[n] || 0));
+    const totalTimes = finalUserSpeakingTime + aiTotal || 1;
     
     const participationBreakdown = [
-      { name: 'User', speakingTime: userSpeakingTime, percentage: Math.round((userSpeakingTime / totalTimes) * 100) }
+      { name: 'User', speakingTime: finalUserSpeakingTime, percentage: Math.round((finalUserSpeakingTime / totalTimes) * 100) }
     ];
     activeNames.forEach(n => {
       participationBreakdown.push({
         name: n,
-        speakingTime: aiSpeakingTimes[n] || 0,
-        percentage: Math.round(((aiSpeakingTimes[n] || 0) / totalTimes) * 100)
+        speakingTime: finalAiSpeakingTimes[n] || 0,
+        percentage: Math.round(((finalAiSpeakingTimes[n] || 0) / totalTimes) * 100)
       });
     });
 
     try {
       // Save session details and generate coaching diagnostics on the backend
-      const res = await fetch(`http://localhost:5000/api/sessions/${session._id}/complete`, {
+      const res = await fetch(`http://localhost:5000/api/sessions/${currentSession._id}/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
-          transcript: transcript.map(t => ({ speaker: t.speaker, text: t.text, isInterrupted: t.isInterrupted })),
+          transcript: finalTranscript.map(t => ({ speaker: t.speaker, text: t.text, isInterrupted: t.isInterrupted })),
           userMetrics,
           participationBreakdown
         })
@@ -665,13 +745,13 @@ export default function GDArena({ session, onComplete }) {
       
       // Fallback sandbox: mock local analytics generation in 3s
       setTimeout(() => {
-        const localScore = scoreLocalContribution(transcript, userMetrics);
+        const localScore = scoreLocalContribution(finalTranscript, userMetrics);
         onComplete({
-          _id: session._id,
-          topic: session.topic,
-          durationLimit: session.durationLimit,
+          _id: currentSession._id,
+          topic: currentSession.topic,
+          durationLimit: currentSession.durationLimit,
           createdAt: new Date(),
-          transcript: transcript,
+          transcript: finalTranscript,
           userMetrics,
           participationBreakdown,
           aiEvaluation: {
@@ -688,7 +768,7 @@ export default function GDArena({ session, onComplete }) {
             argumentDepth: localScore.isVeryWeak ? "Very low argument depth; the response was mostly acknowledgement." : "Moderate depth. Add examples, data, or real-world consequences.",
             suggestedPhrases: [
               {
-                original: transcript.find(t => t.speaker === 'User')?.text || "ok",
+                original: finalTranscript.find(t => t.speaker === 'User')?.text || "ok",
                 improved: "I believe AI will reshape employment because routine tasks may be automated, but it can also create new roles if workers receive structured reskilling support.",
                 reason: "Turns a weak acknowledgement into a clear claim with reasoning and balance."
               }
@@ -705,7 +785,6 @@ export default function GDArena({ session, onComplete }) {
     const secs = seconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
-
   if (discussionState === 'analyzing') {
     return (
       <div style={{
@@ -787,12 +866,43 @@ export default function GDArena({ session, onComplete }) {
       <div className="flat-card arena-header">
         <div style={{ flex: 1 }}>
           <span className="badge badge-primary" style={{ marginBottom: '4px', display: 'inline-block' }}>
-            Live Discussion
+            {discussionState === 'idle' && 'Ready to Start'}
+            {discussionState === 'ongoing' && 'Live Discussion'}
+            {discussionState === 'paused' && 'Paused'}
           </span>
-          <h2>{session.topic}</h2>
+          <h2>{currentSession.topic}</h2>
         </div>
         
         <div className="arena-controls">
+          <div className="gd-top-controls">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={handleStartRound}
+              disabled={discussionState === 'ongoing' || discussionState === 'analyzing' || timeLeft <= 0}
+            >
+              <Play size={16} fill="white" />
+              <span>{discussionState === 'paused' ? 'Resume' : 'Start'}</span>
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handlePauseRound}
+              disabled={discussionState !== 'ongoing'}
+            >
+              <Pause size={16} />
+              <span>Pause</span>
+            </button>
+            <button
+              type="button"
+              className="btn-danger"
+              onClick={handleStopRound}
+              disabled={discussionState === 'idle' || discussionState === 'analyzing'}
+            >
+              <Square size={15} fill="white" />
+              <span>Stop</span>
+            </button>
+          </div>
           
           {/* Webcam Toggle */}
           <button
@@ -815,7 +925,7 @@ export default function GDArena({ session, onComplete }) {
 
           {/* TTS Audio Speaker Mute */}
           <button
-            onClick={() => setIsMuted(!isMuted)}
+            onClick={handleToggleMute}
             className="btn-secondary"
             style={{
               padding: '10px',
@@ -837,7 +947,7 @@ export default function GDArena({ session, onComplete }) {
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid var(--border-color)',
             borderRadius: '10px',
-            padding: '8px 16px',
+            padding: '6px 14px',
             textAlign: 'center',
             minWidth: '90px'
           }}>
@@ -849,296 +959,76 @@ export default function GDArena({ session, onComplete }) {
               fontFamily: 'monospace'
             }}>{formatTime(timeLeft)}</div>
           </div>
-
-          <button onClick={handleEndDiscussion} className="btn-danger">
-            End & Evaluate
-          </button>
         </div>
       </div>
 
-      <div className="live-coach-grid">
-        <div className="flat-card metric-card-compact">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)', fontWeight: 800, fontSize: '0.82rem', marginBottom: '8px' }}>
-            <RefreshCw size={15} className={isLiveAnalysisLoading ? 'spinning-icon' : ''} />
-            LIVE COACH
-          </div>
-          <p style={{ fontSize: '0.92rem', lineHeight: 1.45 }}>{liveAnalysis.summary}</p>
-          <div style={{ marginTop: '10px', fontSize: '0.82rem', color: 'var(--text-main)', fontWeight: 650 }}>
-            Next: {liveAnalysis.nextMove}
-          </div>
-        </div>
-
-        <div className="flat-card metric-card-compact">
-          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 800, marginBottom: '10px' }}>REAL-TIME QUALITY</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700 }}>RELEVANCE</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--accent-green)' }}>{liveAnalysis.relevanceScore || 0}%</div>
-            </div>
-            <div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700 }}>CLARITY</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--secondary)' }}>{liveAnalysis.clarityScore || 0}%</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flat-card metric-card-compact">
-          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 800, marginBottom: '10px' }}>GEMINI FREE-TIER GUARD</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline' }}>
-            <div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 850, color: 'var(--primary)' }}>
-                {aiRateStatus ? `${aiRateStatus.callsInLastMinute}/${aiRateStatus.rpmLimit}` : 'Local'}
-              </div>
-              <p style={{ fontSize: '0.8rem' }}>requests in the last minute</p>
-            </div>
-            <span className={aiRateStatus?.enabled ? 'badge badge-success' : 'badge badge-danger'}>
-              {aiRateStatus?.enabled ? aiRateStatus.model : 'Fallback'}
-            </span>
-          </div>
-          {aiRateStatus && (
-            <div className="quota-meter" style={{ '--meter-width': `${Math.min(100, Math.round((aiRateStatus.callsInLastMinute / Math.max(aiRateStatus.rpmLimit, 1)) * 100))}%`, marginTop: '12px' }}>
-              <span />
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="arena-grid">
+      <div className="arena-console-grid">
         
         {/* Arena round table simulator visual */}
-        <div className="flat-card" style={{
+        <div className="flat-card arena-stage-card" style={{
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'flex-start',
           minHeight: '440px',
           position: 'relative'
         }}>
           
-          <h3 style={{
-            position: 'absolute',
-            top: '20px',
-            fontSize: '0.9rem',
-            color: 'var(--text-muted)',
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '1.5px'
-          }}>
-            GD Round Table Sandbox
-          </h3>
-
-          {/* Circular Round Table Arrangement */}
-          <div style={{
-            position: 'relative',
-            width: '280px',
-            height: '280px',
-            borderRadius: '50%',
-            background: 'radial-gradient(circle, rgba(15,118,110,0.18) 0%, rgba(38,50,65,0.95) 72%)',
-            border: '8px solid rgba(255,255,255,0.03)',
-            boxShadow: 'inset 0 0 30px rgba(0,0,0,0.8), 0 0 30px rgba(139,92,246,0.05)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '40px 0'
-          }}>
-            
-            {/* Table center topic card */}
-            <div style={{
-              textAlign: 'center',
-              padding: '20px',
-              maxWidth: '180px',
-              zIndex: 5
-            }}>
-              <div style={{
-                fontSize: '0.7rem',
-                color: 'var(--text-muted)',
-                fontWeight: 800,
-                letterSpacing: '1px',
-                marginBottom: '4px'
-              }}>ACTIVE SPEAKER</div>
-              <div style={{
-                fontSize: '1rem',
-                fontWeight: 700,
-                color: activeSpeaker.includes('User') ? 'var(--accent-green)' : activeSpeaker === 'System' ? 'var(--text-muted)' : 'var(--primary)',
-                background: 'rgba(255,255,255,0.03)',
-                padding: '6px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-color)',
-                display: 'inline-block',
-                textTransform: 'uppercase'
-              }}>{activeSpeaker.split(' ')[0]}</div>
-            </div>
-
-            {/* AVATAR: USER (At the bottom) */}
-            <div style={{
-              position: 'absolute',
-              bottom: '-45px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              textAlign: 'center',
-              zIndex: 10
-            }}>
-              <div style={{
-                width: '64px',
-                height: '64px',
-                borderRadius: '50%',
-                background: isVideoActive ? 'transparent' : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                color: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '1.4rem',
-                border: '3px solid #06070a',
-                boxShadow: activeSpeaker === 'User' ? '0 0 20px var(--accent-green)' : 'none',
-                animation: activeSpeaker === 'User' ? 'pulseSpeaking 1.5s infinite' : 'none',
-                transition: 'var(--transition-smooth)',
-                overflow: 'hidden'
-              }}>
-                {isVideoActive ? (
-                  <Webcam
-                    audio={false}
-                    mirrored={true}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
+          <div className="modern-gd-panel">
+            <div className="speaker-spotlight">
+              <div>
+                <span className="arena-card-label">Active Speaker</span>
+                <h3>{activeSpeaker === 'System' ? 'Waiting for the round to start' : activeSpeaker}</h3>
+                <p>
+                  {activeSpeechText || (discussionState === 'idle'
+                    ? 'Press Start to begin the discussion.'
+                    : discussionState === 'paused'
+                      ? 'Round is paused. Resume when you are ready.'
+                      : 'The floor is open for the next contribution.')}
+                </p>
+              </div>
+              <div className={`speaker-orb ${activeSpeaker === 'User' ? 'is-user' : ''}`}>
+                {activeSpeaker === 'User' && isVideoActive ? (
+                  <Webcam audio={false} mirrored={true} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 ) : (
-                  "U"
+                  activeSpeaker === 'System' || activeSpeaker === 'Paused' ? 'GD' : activeSpeaker.charAt(0)
                 )}
               </div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, marginTop: '4px', color: 'var(--accent-green)' }}>You</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{userSpeakingTime}s spoke</div>
             </div>
 
-            {/* AVATARS: AI MEMBERS arrangement (around the table) */}
-            
-            {/* Sam (Top Left) */}
-            {activeAIMembers.some(a => a.name === 'Sam') && (
-            <div style={{
-              position: 'absolute',
-              top: '-15px',
-              left: '-25px',
-              textAlign: 'center',
-              zIndex: 10
-            }}>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                borderRadius: '50%',
-                background: '#f43f5e',
-                color: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '1.3rem',
-                border: '3px solid #06070a',
-                boxShadow: activeSpeaker === 'Sam' ? '0 0 20px #f43f5e' : 'none',
-                animation: activeSpeaker === 'Sam' ? 'pulseSpeaking 1.5s infinite' : 'none',
-                transition: 'var(--transition-smooth)'
-              }}>
-                S
-              </div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, marginTop: '4px', color: '#f43f5e' }}>Sam</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{aiSpeakingTimes.Sam}s spoke</div>
+            <div className="modern-members-grid">
+              {[
+                { name: 'User', label: 'You', role: 'Participant', color: '#10b981' },
+                ...activeAIMembers.map(member => ({
+                  name: member.name,
+                  label: member.name,
+                  role: member.role,
+                  color: member.color
+                }))
+              ].map(member => {
+                const isActive = activeSpeaker === member.name || (member.name === 'User' && activeSpeaker === 'User');
+                return (
+                  <div
+                    key={member.name}
+                    className={`modern-member-card ${isActive ? 'is-active' : ''}`}
+                    style={{ '--member-color': member.color }}
+                  >
+                    <div className="modern-member-avatar">
+                      {member.name === 'User' && isVideoActive ? (
+                        <Webcam audio={false} mirrored={true} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ) : (
+                        member.label.charAt(0)
+                      )}
+                    </div>
+                    <div>
+                      <strong>{member.label}</strong>
+                      <span>{member.role}</span>
+                    </div>
+                    <small>{isActive ? 'Speaking' : 'Ready'}</small>
+                  </div>
+                );
+              })}
             </div>
-            )}
-
-            {/* Meera (Top Right) */}
-            {activeAIMembers.some(a => a.name === 'Meera') && (
-            <div style={{
-              position: 'absolute',
-              top: '-15px',
-              right: '-25px',
-              textAlign: 'center',
-              zIndex: 10
-            }}>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                borderRadius: '50%',
-                background: '#06b6d4',
-                color: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '1.3rem',
-                border: '3px solid #06070a',
-                boxShadow: activeSpeaker === 'Meera' ? '0 0 20px #06b6d4' : 'none',
-                animation: activeSpeaker === 'Meera' ? 'pulseSpeaking 1.5s infinite' : 'none',
-                transition: 'var(--transition-smooth)'
-              }}>
-                M
-              </div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, marginTop: '4px', color: '#06b6d4' }}>Meera</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{aiSpeakingTimes.Meera}s spoke</div>
-            </div>
-            )}
-
-            {/* Leo (Middle Left) */}
-            {activeAIMembers.some(a => a.name === 'Leo') && (
-            <div style={{
-              position: 'absolute',
-              top: '110px',
-              left: '-45px',
-              textAlign: 'center',
-              zIndex: 10
-            }}>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                borderRadius: '50%',
-                background: '#10b981',
-                color: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '1.3rem',
-                border: '3px solid #06070a',
-                boxShadow: activeSpeaker === 'Leo' ? '0 0 20px #10b981' : 'none',
-                animation: activeSpeaker === 'Leo' ? 'pulseSpeaking 1.5s infinite' : 'none',
-                transition: 'var(--transition-smooth)'
-              }}>
-                L
-              </div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, marginTop: '4px', color: '#10b981' }}>Leo</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{aiSpeakingTimes.Leo}s spoke</div>
-            </div>
-            )}
-
-            {/* Kabir (Middle Right) */}
-            {activeAIMembers.some(a => a.name === 'Kabir') && (
-            <div style={{
-              position: 'absolute',
-              top: '110px',
-              right: '-45px',
-              textAlign: 'center',
-              zIndex: 10
-            }}>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                borderRadius: '50%',
-                background: '#f59e0b',
-                color: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 800,
-                fontSize: '1.3rem',
-                border: '3px solid #06070a',
-                boxShadow: activeSpeaker === 'Kabir' ? '0 0 20px #f59e0b' : 'none',
-                animation: activeSpeaker === 'Kabir' ? 'pulseSpeaking 1.5s infinite' : 'none',
-                transition: 'var(--transition-smooth)'
-              }}>
-                K
-              </div>
-              <div style={{ fontSize: '0.8rem', fontWeight: 700, marginTop: '4px', color: '#f59e0b' }}>Kabir</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{aiSpeakingTimes.Kabir}s spoke</div>
-            </div>
-            )}
-
           </div>
 
           {/* Real-time speech input panel */}
@@ -1175,6 +1065,7 @@ export default function GDArena({ session, onComplete }) {
             <div style={{ display: 'flex', gap: '15px', alignItems: 'center', width: '100%', maxWidth: '400px' }}>
               <button
                 onClick={toggleMic}
+                disabled={discussionState !== 'ongoing'}
                 style={{
                   width: '64px',
                   height: '64px',
@@ -1182,7 +1073,8 @@ export default function GDArena({ session, onComplete }) {
                   background: isMicActive ? 'linear-gradient(135deg, var(--accent-red) 0%, #e11d48 100%)' : 'linear-gradient(135deg, var(--primary) 0%, #6d28d9 100%)',
                   border: 'none',
                   color: 'white',
-                  cursor: 'pointer',
+                  cursor: discussionState === 'ongoing' ? 'pointer' : 'not-allowed',
+                  opacity: discussionState === 'ongoing' ? 1 : 0.55,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1197,6 +1089,10 @@ export default function GDArena({ session, onComplete }) {
                 <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
                   {isMicActive ? (
                     <strong style={{ color: 'var(--accent-red)' }}>Microphone Active - Speak Now!</strong>
+                  ) : discussionState === 'idle' ? (
+                    <span>Press Start GD to begin the timed round.</span>
+                  ) : discussionState === 'paused' ? (
+                    <span>Round paused. Press Resume GD to continue.</span>
                   ) : (
                     <span>Click Mic to speak, or use the Text Box below to participate.</span>
                   )}
@@ -1248,6 +1144,7 @@ export default function GDArena({ session, onComplete }) {
                 type="text"
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
+                disabled={discussionState !== 'ongoing'}
                 placeholder="Type your arguments here to participate without microphone..."
                 style={{
                   flex: 1,
@@ -1275,8 +1172,8 @@ export default function GDArena({ session, onComplete }) {
         </div>
 
         {/* Live Conversation Transcript Feed */}
-        <div className="flat-card" style={{
-          height: '610px',
+        <div className="arena-side-stack">
+          <div className="flat-card arena-feed-card" style={{
           display: 'flex',
           flexDirection: 'column',
           padding: '20px 24px'
@@ -1300,7 +1197,7 @@ export default function GDArena({ session, onComplete }) {
               
               if (isSystem) {
                 return (
-                  <div key={idx} style={{
+                  <div key={`${t.id || t.timestamp || idx}-system`} style={{
                     textAlign: 'center',
                     background: 'rgba(255,255,255,0.02)',
                     borderRadius: '8px',
@@ -1316,7 +1213,7 @@ export default function GDArena({ session, onComplete }) {
 
               if (isHR) {
                 return (
-                  <div key={idx} style={{
+                  <div key={`${t.id || t.timestamp || idx}-hr`} style={{
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -1344,7 +1241,7 @@ export default function GDArena({ session, onComplete }) {
 
               return (
                 <div
-                  key={idx}
+                  key={t.id || t.timestamp || idx}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -1402,6 +1299,7 @@ export default function GDArena({ session, onComplete }) {
             <div>Interruptions count: <strong style={{ color: 'var(--accent-red)' }}>{userInterruptionCount}</strong></div>
             <div>Filler words count: <strong style={{ color: 'var(--accent-yellow)' }}>{fillerWordsCount}</strong></div>
           </div>
+        </div>
         </div>
 
       </div>

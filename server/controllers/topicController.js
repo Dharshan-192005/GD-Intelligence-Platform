@@ -1,4 +1,4 @@
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const geminiService = require('../services/geminiService');
 
 const generateTopicsFromResume = async (req, res) => {
@@ -11,8 +11,13 @@ const generateTopicsFromResume = async (req, res) => {
     
     // Parse the file
     if (req.file.mimetype === 'application/pdf') {
-      const data = await pdfParse(req.file.buffer);
-      textContent = data.text;
+      const parser = new PDFParse({ data: req.file.buffer });
+      try {
+        const data = await parser.getText();
+        textContent = data.text;
+      } finally {
+        await parser.destroy?.();
+      }
     } else {
       // Fallback for text files
       textContent = req.file.buffer.toString('utf8');

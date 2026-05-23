@@ -1,12 +1,26 @@
 const Session = require('../models/Session');
 const geminiService = require('../services/geminiService');
 const { checkInMemoryMode } = require('../config/db');
+const mongoose = require('mongoose');
 
 // In-memory data store fallback if MongoDB is not running
 const inMemorySessions = [];
 
 // Helper to generate a unique ID for in-memory sessions
 const generateId = () => Math.random().toString(36).substring(2, 9);
+
+const ownsSession = (session, userId) => {
+  if (!session || !userId) return false;
+  return String(session.userId || '') === String(userId);
+};
+
+const validateMongoId = (id, res) => {
+  if (!checkInMemoryMode() && !mongoose.Types.ObjectId.isValid(id)) {
+    res.status(400).json({ error: 'Invalid session id.' });
+    return false;
+  }
+  return true;
+};
 
 /**
  * Create a new GD session
@@ -20,6 +34,7 @@ const createSession = async (req, res) => {
     }
 
     const sessionData = {
+      userId: req.user?.id,
       topic,
       industryContext: industryContext || 'General/Academic',
       durationLimit,
@@ -75,11 +90,11 @@ const getHistory = async (req, res) => {
   try {
     if (checkInMemoryMode()) {
       const completed = inMemorySessions
-        .filter(s => s.isCompleted)
+        .filter(s => s.isCompleted && ownsSession(s, req.user?.id))
         .sort((a, b) => b.createdAt - a.createdAt);
       return res.json(completed);
     } else {
-      const completed = await Session.find({ isCompleted: true })
+      const completed = await Session.find({ isCompleted: true, userId: req.user.id })
         .sort({ createdAt: -1 })
         .select('topic durationLimit createdAt userMetrics aiEvaluation');
       return res.json(completed);
@@ -96,14 +111,17 @@ const getHistory = async (req, res) => {
 const getSessionById = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!validateMongoId(id, res)) return;
 
     if (checkInMemoryMode()) {
       const session = inMemorySessions.find(s => s._id === id);
       if (!session) return res.status(404).json({ error: 'Session not found.' });
+      if (!ownsSession(session, req.user?.id)) return res.status(403).json({ error: 'Access denied.' });
       return res.json(session);
     } else {
       const session = await Session.findById(id);
       if (!session) return res.status(404).json({ error: 'Session not found.' });
+      if (!ownsSession(session, req.user?.id)) return res.status(403).json({ error: 'Access denied.' });
       return res.json(session);
     }
   } catch (error) {
@@ -169,6 +187,7 @@ const completeSession = async (req, res) => {
   try {
     const { id } = req.params;
     const { transcript, userMetrics, participationBreakdown } = req.body;
+    if (!validateMongoId(id, res)) return;
 
     if (!transcript) {
       return res.status(400).json({ error: 'Transcript is required to complete session.' });
@@ -184,6 +203,9 @@ const completeSession = async (req, res) => {
 
     if (!session) {
       return res.status(404).json({ error: 'Session not found.' });
+    }
+    if (!ownsSession(session, req.user?.id)) {
+      return res.status(403).json({ error: 'Access denied.' });
     }
 
     // Call Gemini API to run the qualitative coaching report
