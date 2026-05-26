@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, ShieldAlert, Camera, CameraOff, Play, Pause, Square } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, Send, RefreshCw, ShieldAlert, Camera, CameraOff, Play, Pause, Square, FileText, X } from 'lucide-react';
 import Webcam from 'react-webcam';
 import { io } from 'socket.io-client';
 
@@ -9,6 +9,25 @@ const AI_MEMBERS = [
   { name: 'Leo', role: 'The Harmonizer', color: '#10b981', initialIntro: 'It is wonderful to be discussing this. Let\'s remember to hear everyone out and try to find a collaborative balance.', prompt: 'You are encouraging, supportive, bridge opposing ideas, and summarize points to build consensus.' },
   { name: 'Kabir', role: 'The Skeptic', color: '#f59e0b', initialIntro: 'Before we jump to conclusions, I want to challenge the core assumption we are basing this whole premise on.', prompt: 'You play devil\'s advocate, raise doubts, question assertions, and demand logical backing.' }
 ];
+
+const getConfiguredAIMembers = () => {
+  try {
+    const savedPersonas = JSON.parse(localStorage.getItem('gd_ai_personas')) || [];
+    if (!Array.isArray(savedPersonas) || savedPersonas.length === 0) return AI_MEMBERS;
+
+    return savedPersonas.map((persona, index) => ({
+      name: persona.name || `AI ${index + 1}`,
+      role: persona.role || 'AI Participant',
+      color: persona.color || AI_MEMBERS[index % AI_MEMBERS.length].color,
+      initialIntro: persona.initialIntro || persona.desc || AI_MEMBERS[index % AI_MEMBERS.length].initialIntro,
+      prompt: persona.prompt || `You are ${persona.role || 'a realistic group discussion participant'}. Speak in this style: ${persona.style || 'balanced and professional'}.`,
+      style: persona.style,
+      pressure: persona.pressure
+    }));
+  } catch {
+    return AI_MEMBERS;
+  }
+};
 
 const VOICE_PROFILES = {
   Sam: {
@@ -94,7 +113,7 @@ export default function GDArena({ session, onComplete }) {
     industryContext: 'General / Academic'
   };
   const activeAIMembers = useMemo(
-    () => AI_MEMBERS.slice(0, currentSession.numParticipants || 4),
+    () => getConfiguredAIMembers().slice(0, currentSession.numParticipants || 4),
     [currentSession.numParticipants]
   );
   const [timeLeft, setTimeLeft] = useState(Number(currentSession.durationLimit || 2) * 60);
@@ -117,6 +136,10 @@ export default function GDArena({ session, onComplete }) {
   const [bodyLanguageScore, setBodyLanguageScore] = useState(85);
   const [aiRateStatus, setAiRateStatus] = useState(null);
   const [speechVoices, setSpeechVoices] = useState([]);
+  const [isNotesOpen, setIsNotesOpen] = useState(false);
+  const [isNotesDocked, setIsNotesDocked] = useState(false);
+  const [roundNotes, setRoundNotes] = useState(() => localStorage.getItem('gd_round_notes') || '');
+  const [summaryText, setSummaryText] = useState('');
 
   const authHeaders = () => {
     const token = localStorage.getItem('gd_token');
@@ -665,19 +688,40 @@ export default function GDArena({ session, onComplete }) {
   };
 
   // Triggered when GD finishes
-  async function handleEndDiscussion() {
+  async function handleEndDiscussion({ skipSummary = false, summaryText: finalSummaryText = '' } = {}) {
     if (conversationEndTriggeredRef.current) return;
-    conversationEndTriggeredRef.current = true;
 
     window.speechSynthesis.cancel();
-    setDiscussionState('analyzing');
     clearInterval(countdownTimerRef.current);
     clearInterval(userSpeakingTimerRef.current);
     clearInterval(activeAITimerRef.current);
     clearTimeout(autoSpeechQueueRef.current);
 
+    if (!skipSummary && discussionStateRef.current !== 'summarizing') {
+      recognitionRef.current?.stop?.();
+      setAndSyncActiveSpeaker('Summary');
+      setActiveSpeechText('');
+      setDiscussionState('summarizing');
+      return;
+    }
+
+    conversationEndTriggeredRef.current = true;
+    setDiscussionState('analyzing');
+
     const latest = latestRoundRef.current || {};
-    const finalTranscript = latest.transcript || transcript;
+    let finalTranscript = latest.transcript || transcript;
+    if (finalSummaryText.trim()) {
+      finalTranscript = [
+        ...finalTranscript,
+        {
+          id: Date.now() + Math.random(),
+          speaker: 'User',
+          text: `[Summary] ${finalSummaryText.trim()}`,
+          timestamp: new Date(),
+          isInterrupted: false
+        }
+      ];
+    }
     const finalUserSpeakingTime = latest.userSpeakingTime ?? userSpeakingTime;
     const finalUserInterruptionCount = latest.userInterruptionCount ?? userInterruptionCount;
     const finalUserInterruptedCount = latest.userInterruptedCount ?? userInterruptedCount;
@@ -785,6 +829,50 @@ export default function GDArena({ session, onComplete }) {
     const secs = seconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
+  const getSpeakerColor = (speaker) => {
+    if (speaker === 'User') return '#10b981';
+    if (speaker === 'System') return '#64748b';
+    if (speaker === 'HR Moderator') return '#8b5cf6';
+    return activeAIMembers.find(member => member.name === speaker)?.color || 'var(--primary)';
+  };
+  const getMessageTime = (timestamp) => {
+    const date = timestamp ? new Date(timestamp) : new Date();
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+  const liveTip = activeSpeaker === 'User'
+    ? 'You have the floor. Keep it crisp: point, reason, example, link.'
+    : activeAIMembers.some(ai => ai.name === activeSpeaker)
+      ? `Listen to ${activeSpeaker}'s point, then respond with agreement, counter, or example.`
+      : discussionState === 'summarizing'
+        ? 'Summarize both sides and end with a clear final view.'
+        : 'Start the round, then use notes and prompt chips to shape your answers.';
+
+  if (discussionState === 'summarizing') {
+    return (
+      <div className="summary-round-shell">
+        <div className="flat-card summary-round-card">
+          <span className="badge badge-primary">Summary Round</span>
+          <h1>Close the GD with a 30-second summary</h1>
+          <p>Summarize the strongest points, mention both sides, and end with your final position. This improves leadership scoring.</p>
+          <textarea
+            value={summaryText}
+            onChange={(e) => setSummaryText(e.target.value)}
+            placeholder="Example: The group discussed both opportunity and risk. I believe the best path is..."
+          />
+          <div className="summary-round-actions">
+            <button type="button" className="btn-secondary" onClick={() => handleEndDiscussion({ skipSummary: true })}>
+              Skip Summary
+            </button>
+            <button type="button" className="btn-primary" onClick={() => handleEndDiscussion({ skipSummary: true, summaryText })}>
+              <FileText size={16} />
+              Evaluate With Summary
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (discussionState === 'analyzing') {
     return (
       <div style={{
@@ -835,6 +923,11 @@ export default function GDArena({ session, onComplete }) {
     );
   }
 
+  function updateRoundNotes(value) {
+    setRoundNotes(value);
+    localStorage.setItem('gd_round_notes', value);
+  }
+
   return (
     <div className="arena-shell">
       
@@ -859,6 +952,38 @@ export default function GDArena({ session, onComplete }) {
         }}>
           <ShieldAlert size={20} />
           <span>INTERRUPTION DETECTED! AI Silenced.</span>
+        </div>
+      )}
+
+      {isNotesOpen && (
+        <div className={`round-notes-overlay ${isNotesDocked ? 'is-docked' : ''}`} role="dialog" aria-modal={!isNotesDocked} aria-label="GD notes">
+          <div className="round-notes-panel">
+            <div className="round-notes-header">
+              <div>
+                <span><FileText size={15} /> GD Notes</span>
+                <h2>Note your points during the round</h2>
+              </div>
+              <div className="round-notes-header-actions">
+                <button type="button" onClick={() => setIsNotesDocked(prev => !prev)} title={isNotesDocked ? 'Undock notes' : 'Dock notes'}>
+                  {isNotesDocked ? 'Popup' : 'Dock'}
+                </button>
+                <button type="button" onClick={() => setIsNotesOpen(false)} title="Close notes">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <textarea
+              value={roundNotes}
+              onChange={(e) => updateRoundNotes(e.target.value)}
+              placeholder="Write quick points, examples, counter-arguments, or summary lines here..."
+            />
+            <div className="round-notes-footer">
+              <span>Saved automatically on this device</span>
+              <button type="button" className="btn-primary" onClick={() => setIsNotesOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -904,6 +1029,26 @@ export default function GDArena({ session, onComplete }) {
             </button>
           </div>
           
+          {/* Webcam Toggle */}
+          <button
+            onClick={() => setIsNotesOpen(true)}
+            className="btn-secondary"
+            style={{
+              padding: '10px',
+              borderRadius: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '7px',
+              border: 'none',
+              height: '44px'
+            }}
+            title="Open GD notes"
+          >
+            <FileText size={18} />
+            <span>Notes</span>
+          </button>
+
           {/* Webcam Toggle */}
           <button
             onClick={() => setIsVideoActive(!isVideoActive)}
@@ -970,7 +1115,7 @@ export default function GDArena({ session, onComplete }) {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'flex-start',
-          minHeight: '440px',
+          minHeight: '620px',
           position: 'relative'
         }}>
           
@@ -987,7 +1132,7 @@ export default function GDArena({ session, onComplete }) {
                       : 'The floor is open for the next contribution.')}
                 </p>
               </div>
-              <div className={`speaker-orb ${activeSpeaker === 'User' ? 'is-user' : ''}`}>
+              <div className={`speaker-orb ${activeSpeaker === 'User' ? 'is-user' : ''} ${discussionState === 'ongoing' && activeSpeaker !== 'System' ? 'is-echoing' : ''}`}>
                 {activeSpeaker === 'User' && isVideoActive ? (
                   <Webcam audio={false} mirrored={true} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 ) : (
@@ -1006,11 +1151,12 @@ export default function GDArena({ session, onComplete }) {
                   color: member.color
                 }))
               ].map(member => {
-                const isActive = activeSpeaker === member.name || (member.name === 'User' && activeSpeaker === 'User');
+                const isUserMember = member.name === 'User';
+                const isActive = activeSpeaker === member.name || (isUserMember && activeSpeaker === 'User');
                 return (
                   <div
                     key={member.name}
-                    className={`modern-member-card ${isActive ? 'is-active' : ''}`}
+                    className={`modern-member-card ${isActive ? 'is-active is-echoing' : ''} ${isUserMember ? 'is-user-card' : ''}`}
                     style={{ '--member-color': member.color }}
                   >
                     <div className="modern-member-avatar">
@@ -1024,11 +1170,34 @@ export default function GDArena({ session, onComplete }) {
                       <strong>{member.label}</strong>
                       <span>{member.role}</span>
                     </div>
-                    <small>{isActive ? 'Speaking' : 'Ready'}</small>
+                    {isUserMember ? (
+                      <button
+                        type="button"
+                        className={`member-mic-button ${isMicActive ? 'is-listening' : ''}`}
+                        onClick={toggleMic}
+                        disabled={discussionState !== 'ongoing'}
+                        title={isMicActive ? 'Stop microphone' : 'Start microphone'}
+                      >
+                        {isMicActive ? <MicOff size={18} /> : <Mic size={18} />}
+                      </button>
+                    ) : (
+                      <small>{isActive ? 'Speaking' : 'Ready'}</small>
+                    )}
                   </div>
                 );
               })}
             </div>
+          </div>
+
+          <div className="arena-live-tip-card">
+            <div>
+              <span>Live Tip</span>
+              <p>{liveTip}</p>
+            </div>
+            <button type="button" onClick={() => setIsNotesOpen(true)}>
+              <FileText size={15} />
+              Note
+            </button>
           </div>
 
           {/* Real-time speech input panel */}
@@ -1171,29 +1340,68 @@ export default function GDArena({ session, onComplete }) {
 
         </div>
 
+        <div className="arena-middle-scroll-divider" aria-hidden="true">
+          <span />
+        </div>
+
         {/* Live Conversation Transcript Feed */}
         <div className="arena-side-stack">
-          <div className="flat-card arena-feed-card" style={{
-          display: 'flex',
-          flexDirection: 'column',
-          padding: '20px 24px'
-        }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '15px' }}>Live Discussion Feed</h2>
+          <div className="flat-card arena-feed-card">
+          <div className="arena-chat-header">
+            <div>
+              <span>GD Chatbox</span>
+              <h2>Live Discussion Feed</h2>
+            </div>
+            <FileText size={20} />
+          </div>
           
-          <div style={{
-            flex: 1,
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            paddingRight: '6px',
-            marginBottom: '15px'
-          }}>
+          <div className="arena-chat-scroll">
+            {transcript.length === 0 && (
+              <div className="arena-chat-empty">
+                <div className="arena-topic-card">
+                  <span>Current Topic</span>
+                  <h3>{currentSession.topic}</h3>
+                  <p>{currentSession.industryContext || 'General / Academic'} • {currentSession.durationLimit} minute round</p>
+                </div>
+
+                <div className="arena-tip-grid">
+                  <div>
+                    <strong>Open Strong</strong>
+                    <p>Start with a clear view: “I would frame this around impact, risk, and opportunity.”</p>
+                  </div>
+                  <div>
+                    <strong>Use Evidence</strong>
+                    <p>Add one example, number, or real situation before concluding.</p>
+                  </div>
+                  <div>
+                    <strong>Interact</strong>
+                    <p>Refer to another speaker before adding your point.</p>
+                  </div>
+                </div>
+
+                <div className="arena-prompt-chips">
+                  {[
+                    'I agree, but the implementation risk is...',
+                    'A practical example is...',
+                    'To summarize the group so far...'
+                  ].map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => setTextInput(chip)}
+                      disabled={discussionState !== 'ongoing'}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {transcript.map((t, idx) => {
               const isUser = t.speaker === 'User';
               const isSystem = t.speaker === 'System';
               const isHR = t.speaker === 'HR Moderator';
-              const ai = activeAIMembers.find(member => member.name === t.speaker);
               
               if (isSystem) {
                 return (
@@ -1242,45 +1450,26 @@ export default function GDArena({ session, onComplete }) {
               return (
                 <div
                   key={t.id || t.timestamp || idx}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: isUser ? 'flex-end' : 'flex-start',
-                    maxWidth: '85%',
-                    alignSelf: isUser ? 'flex-end' : 'flex-start'
-                  }}
+                  className={`arena-message-row ${isUser ? 'is-user' : ''}`}
                 >
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    fontSize: '0.75rem',
-                    color: isUser ? 'var(--accent-green)' : ai?.color || 'var(--primary)',
-                    fontWeight: 700,
-                    marginBottom: '3px'
-                  }}>
-                    <span>{t.speaker}</span>
-                    {t.isInterrupted && (
-                      <span style={{
-                        background: 'rgba(244,63,94,0.15)',
-                        color: '#fb7185',
-                        padding: '1px 5px',
-                        borderRadius: '4px',
-                        fontSize: '0.65rem',
-                        fontWeight: 600
-                      }}>Interruption</span>
-                    )}
+                  <div className="arena-message-avatar" style={{ '--speaker-color': getSpeakerColor(t.speaker) }}>
+                    {t.speaker.charAt(0)}
                   </div>
-                  <div style={{
-                    background: isUser ? 'rgba(16, 185, 129, 0.12)' : `${ai?.color || 'rgba(139,92,246,0.1)'}15`,
-                    border: `1px solid ${isUser ? 'rgba(16, 185, 129, 0.2)' : `${ai?.color || 'rgba(139,92,246,0.2)'}33`}`,
-                    borderRadius: '12px',
-                    padding: '10px 14px',
-                    fontSize: '0.9rem',
-                    lineHeight: '1.4',
-                    color: t.isInterrupted ? 'var(--text-muted)' : 'var(--text-main)'
-                  }}>
-                    {t.text}
+                  <div className="arena-message-stack">
+                    <div className="arena-message-meta" style={{ color: getSpeakerColor(t.speaker) }}>
+                      <span>{t.speaker}</span>
+                      <em>{getMessageTime(t.timestamp)}</em>
+                      {t.isInterrupted && <b>Interruption</b>}
+                    </div>
+                    <div
+                      className="arena-message-bubble"
+                      style={{
+                        '--speaker-color': getSpeakerColor(t.speaker),
+                        color: t.isInterrupted ? 'var(--text-muted)' : 'var(--text-main)'
+                      }}
+                    >
+                      {t.text}
+                    </div>
                   </div>
                 </div>
               );
@@ -1288,14 +1477,7 @@ export default function GDArena({ session, onComplete }) {
             <div ref={transcriptEndRef} />
           </div>
 
-          <div style={{
-            borderTop: '1px solid var(--border-color)',
-            paddingTop: '15px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            fontSize: '0.8rem',
-            color: 'var(--text-muted)'
-          }}>
+          <div className="arena-chat-footer">
             <div>Interruptions count: <strong style={{ color: 'var(--accent-red)' }}>{userInterruptionCount}</strong></div>
             <div>Filler words count: <strong style={{ color: 'var(--accent-yellow)' }}>{fillerWordsCount}</strong></div>
           </div>

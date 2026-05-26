@@ -4,7 +4,7 @@ import GDArena from './pages/GDArena';
 import AnalyticsReport from './pages/AnalyticsReport';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import { Sparkles, MessageCircle, Home, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save } from 'lucide-react';
+import { Sparkles, MessageCircle, Home, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target, Lightbulb } from 'lucide-react';
 import bgImage from './assets/bg-mountain.png';
 import './App.css';
 
@@ -50,6 +50,8 @@ export default function App() {
   const dashboardNavItems = [
     { id: 'overview', label: 'Overview', icon: Home },
     { id: 'setup', label: 'Setup GD', icon: Settings },
+    { id: 'prep', label: 'Prep Coach', icon: Target },
+    { id: 'innovation', label: 'Innovation Lab', icon: Lightbulb },
     { id: 'members', label: 'AI Members', icon: Users },
     { id: 'history', label: 'History', icon: BarChart2 }
   ];
