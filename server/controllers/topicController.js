@@ -1,5 +1,7 @@
 const { PDFParse } = require('pdf-parse');
 const geminiService = require('../services/geminiService');
+const ResumeTopic = require('../models/ResumeTopic');
+const { checkInMemoryMode } = require('../config/db');
 
 const generateTopicsFromResume = async (req, res) => {
   try {
@@ -31,6 +33,15 @@ const generateTopicsFromResume = async (req, res) => {
     
     // Use Gemini to generate 3 customized GD topics based on resume
     const topics = await geminiService.generateResumeTopics(textContent);
+
+    if (!checkInMemoryMode() && req.user?.id) {
+      await ResumeTopic.create({
+        userId: req.user.id,
+        sourceName: req.file.originalname || 'Resume upload',
+        topics,
+        industryContext: req.body.industryContext || 'General / Academic'
+      });
+    }
     
     return res.json({ topics });
   } catch (error) {
@@ -39,6 +50,24 @@ const generateTopicsFromResume = async (req, res) => {
   }
 };
 
+const generateTrendingTopics = async (req, res) => {
+  try {
+    const avoidTopics = String(req.query.avoid || '')
+      .split('|')
+      .map(topic => topic.trim())
+      .filter(Boolean);
+    const topics = await geminiService.generateTrendingTopics(
+      req.query.industryContext || req.body?.industryContext,
+      avoidTopics
+    );
+    return res.json({ topics, rateLimit: geminiService.getRateLimitStatus() });
+  } catch (error) {
+    console.error('Trending Topic Generation Error:', error);
+    return res.status(500).json({ error: 'Internal Server Error while generating trending topics.' });
+  }
+};
+
 module.exports = {
-  generateTopicsFromResume
+  generateTopicsFromResume,
+  generateTrendingTopics
 };

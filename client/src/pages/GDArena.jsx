@@ -104,6 +104,43 @@ const scoreLocalContribution = (transcript, userMetrics) => {
   };
 };
 
+const buildLocalAIReply = (topic, aiMember, transcript) => {
+  const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
+  const lastTurn = transcript[transcript.length - 1];
+  const lastSpeaker = lastTurn?.speaker || 'the group';
+  const personaText = `${aiMember?.role || ''} ${aiMember?.style || ''} ${aiMember?.prompt || ''}`.toLowerCase();
+  const turnIndex = transcript.length;
+  const topicAngles = [
+    `who benefits most from ${topicCore}`,
+    `what practical risk appears when ${topicCore} is implemented`,
+    `how ${topicCore} affects students, workers, or organizations differently`,
+    `whether ${topicCore} works in real life, not just in theory`,
+    `what safeguard would make ${topicCore} fairer`
+  ];
+  const angle = topicAngles[turnIndex % topicAngles.length];
+
+  if (personaText.includes('aggressive') || personaText.includes('interrupt')) {
+    return `I want to push back on ${lastSpeaker}'s point. The real question is ${angle}, and nobody has answered that directly yet.`;
+  }
+  if (personaText.includes('logical') || personaText.includes('technical') || personaText.includes('data')) {
+    return `For ${topicCore}, I would use a measurable lens: cost, adoption, and long-term impact. That helps us judge ${angle} instead of staying generic.`;
+  }
+  if (personaText.includes('emotional') || personaText.includes('empathy')) {
+    return `We should also look at the human side of ${topicCore}. The debate changes when we ask ${angle} for people who are directly affected.`;
+  }
+  if (personaText.includes('leader') || personaText.includes('dominant')) {
+    return `Let me structure the discussion around ${topicCore}: impact first, feasibility second, and fairness third. That will keep us from repeating the same point.`;
+  }
+  if (personaText.includes('silent') || personaText.includes('observer')) {
+    return `I have been listening, and the missing angle is ${angle}. A short summary before moving ahead would make the discussion stronger.`;
+  }
+  if (personaText.includes('skeptic') || personaText.includes('challenge')) {
+    return `I am not fully convinced yet. On ${topicCore}, what if the expected benefit fails because we ignored ${angle}?`;
+  }
+
+  return `Building on ${lastSpeaker}'s point, ${topicCore} needs a balanced view. We should discuss ${angle} before reaching a conclusion.`;
+};
+
 export default function GDArena({ session, onComplete }) {
   const currentSession = session || {
     _id: 'missing_session',
@@ -138,7 +175,7 @@ export default function GDArena({ session, onComplete }) {
   const [speechVoices, setSpeechVoices] = useState([]);
   const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [isNotesDocked, setIsNotesDocked] = useState(false);
-  const [roundNotes, setRoundNotes] = useState(() => localStorage.getItem('gd_round_notes') || '');
+  const [roundNotes, setRoundNotes] = useState(() => currentSession.roundNotes || localStorage.getItem(`gd_round_notes_${currentSession._id}`) || '');
   const [summaryText, setSummaryText] = useState('');
 
   const authHeaders = () => {
@@ -195,6 +232,13 @@ export default function GDArena({ session, onComplete }) {
     bodyLanguageScore,
     activeAIMembers
   ]);
+
+  useEffect(() => {
+    const notesTimer = setTimeout(() => {
+      setRoundNotes(currentSession.roundNotes || localStorage.getItem(`gd_round_notes_${currentSession._id}`) || '');
+    }, 0);
+    return () => clearTimeout(notesTimer);
+  }, [currentSession._id, currentSession.roundNotes]);
 
   useEffect(() => {
     submitSpeechRef.current = handleUserSpeechSubmitted;
@@ -475,15 +519,16 @@ export default function GDArena({ session, onComplete }) {
     if (aiResponseInFlightRef.current) return;
 
     aiResponseInFlightRef.current = true;
+    const currentTranscript = latestRoundRef.current.transcript || transcript;
     
     // MODERATION CHECK: Evaluate drift every 4 turns
-    if (transcript.length >= 6 && transcript.length - lastModerationTurnRef.current >= 6) {
+    if (currentTranscript.length >= 6 && currentTranscript.length - lastModerationTurnRef.current >= 6) {
       try {
-        lastModerationTurnRef.current = transcript.length;
+        lastModerationTurnRef.current = currentTranscript.length;
         const res = await fetch(`http://localhost:5000/api/sessions/moderate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ topic: currentSession.topic, transcript })
+          body: JSON.stringify({ topic: currentSession.topic, transcript: currentTranscript })
         });
         if (res.ok) {
           const data = await res.json();
@@ -500,7 +545,7 @@ export default function GDArena({ session, onComplete }) {
     }
 
     // Pick next AI speaker. Avoid the one who spoke last.
-    const lastSpeeches = transcript.slice(-3);
+    const lastSpeeches = currentTranscript.slice(-3);
     const lastAIs = lastSpeeches.map(s => s.speaker).filter(s => s !== 'User' && s !== 'System');
     
     let availableAIs = activeAIMembers.filter(ai => !lastAIs.includes(ai.name));
@@ -521,7 +566,7 @@ export default function GDArena({ session, onComplete }) {
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           topic: currentSession.topic,
-          transcript: transcript.map(t => ({ speaker: t.speaker, text: t.text })),
+          transcript: currentTranscript.map(t => ({ speaker: t.speaker, text: t.text })),
           speakerName: nextAI.name,
           personaPrompt: nextAI.prompt,
           industryContext: currentSession.industryContext
@@ -538,15 +583,8 @@ export default function GDArena({ session, onComplete }) {
       }
     } catch {
       console.warn('Offline response generation fallback for', nextAI.name);
-      // fallback local content
       if (discussionStateRef.current === 'ongoing') {
-        const fallbacks = [
-          "I think we need to look at the structural facts of this situation rather than emotional arguments.",
-          "Absolutely, I completely agree with that perspective. However, let's also account for implementation limits.",
-          "That perspective is completely detached from the realistic market numbers we are witnessing today!"
-        ];
-        const randomPhrase = fallbacks[Math.floor(Math.random() * fallbacks.length)];
-        triggerAISpeech(nextAI.name, randomPhrase);
+        triggerAISpeech(nextAI.name, buildLocalAIReply(currentSession.topic, nextAI, currentTranscript));
       }
     } finally {
       aiResponseInFlightRef.current = false;
@@ -777,7 +815,8 @@ export default function GDArena({ session, onComplete }) {
         body: JSON.stringify({
           transcript: finalTranscript.map(t => ({ speaker: t.speaker, text: t.text, isInterrupted: t.isInterrupted })),
           userMetrics,
-          participationBreakdown
+          participationBreakdown,
+          roundNotes
         })
       });
 
@@ -796,6 +835,7 @@ export default function GDArena({ session, onComplete }) {
           durationLimit: currentSession.durationLimit,
           createdAt: new Date(),
           transcript: finalTranscript,
+          roundNotes,
           userMetrics,
           participationBreakdown,
           aiEvaluation: {
@@ -925,7 +965,7 @@ export default function GDArena({ session, onComplete }) {
 
   function updateRoundNotes(value) {
     setRoundNotes(value);
-    localStorage.setItem('gd_round_notes', value);
+    localStorage.setItem(`gd_round_notes_${currentSession._id}`, value);
   }
 
   return (
@@ -978,7 +1018,7 @@ export default function GDArena({ session, onComplete }) {
               placeholder="Write quick points, examples, counter-arguments, or summary lines here..."
             />
             <div className="round-notes-footer">
-              <span>Saved automatically on this device</span>
+              <span>Saved with this GD session after evaluation</span>
               <button type="button" className="btn-primary" onClick={() => setIsNotesOpen(false)}>
                 Done
               </button>

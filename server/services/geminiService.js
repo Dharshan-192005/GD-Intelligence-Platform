@@ -187,9 +187,13 @@ const applyQualityCaps = (evaluation, transcript, userMetrics) => {
 const generateParticipantResponse = async (topic, transcript, speakerName, personaPrompt, industryContext = 'General/Academic') => {
   if (hasApiKey && genAI) {
     try {
-      const model = buildModel({ temperature: 0.85, topP: 0.9, maxOutputTokens: 140 });
+      const model = buildModel({ temperature: 0.95, topP: 0.94, maxOutputTokens: 150 });
       
       const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
+      const usedIdeas = transcript
+        .slice(-10)
+        .map(t => `- ${t.text}`)
+        .join('\n');
       
       const prompt = `You are participating in a live Group Discussion (GD) round. Your name is ${speakerName}.
 
@@ -204,6 +208,9 @@ DISCUSSION TOPIC: "${topic}"
 RECENT CONVERSATION:
 ${transcriptFormatted || "(The discussion just started. Make an opening statement.)"}
 
+IDEAS ALREADY USED:
+${usedIdeas || "- None yet"}
+
 RULES:
 - Output ONLY your spoken dialogue. No labels, no "Name:", no quotes around it.
 - Keep it 1-3 sentences (30-60 words). This is a fast-paced discussion.
@@ -211,7 +218,10 @@ RULES:
 - Sound natural and human. No meta-commentary about your role.
 - Ask a pointed follow-up only when it makes the discussion feel more realistic.
 - Stay on topic: "${topic}". Make substantive points with real reasoning.
-- CRITICAL: DO NOT repeat previous arguments. Ensure your argument adds new perspective and is distinctly different from what others have already said.
+- Mention a topic-specific detail or consequence from "${topic}" so the reply cannot fit every topic.
+- CRITICAL: DO NOT repeat previous arguments, wording, or generic claims from IDEAS ALREADY USED.
+- Your new angle must be different from the last 3 messages. Use one of these moves: example, counterpoint, risk, stakeholder impact, data-like reasoning, implementation challenge, or short summary plus next question.
+- Keep your persona visible through tone and word choice.
 
 Your response:`;
 
@@ -241,31 +251,48 @@ Your response:`;
 
   // FALLBACK — only used when API key is missing or API call fails
   console.warn(`[Fallback] Using static response for ${speakerName}`);
-  const fallbacks = {
-    Sam: [
-      "We need to stop dancing around the real issue here. The impact is immediate and severe, and half-measures won't cut it.",
-      "I completely disagree with that assessment. The ground reality is far more complex than what's being presented.",
-      "If we don't act decisively now, we'll be having this same conversation a year from now with worse outcomes."
+  const lastSpeaker = transcript[transcript.length - 1]?.speaker || 'the group';
+  const topicCore = String(topic || 'this issue').replace(/[?.!]+$/, '');
+  const pools = {
+    aggressive: [
+      `I think the group is being too soft on ${topicCore}. Give me one real-world constraint that proves this idea can survive outside theory.`,
+      `That sounds acceptable on paper, but ${topicCore} needs sharper accountability. Who owns the failure if this goes wrong?`
     ],
-    Meera: [
-      "Let me bring some data to this discussion. Research consistently shows that structured approaches yield 40% better outcomes in situations like these.",
-      "The statistics paint a nuanced picture. We need to separate correlation from causation before drawing conclusions.",
-      "From an analytical standpoint, the key variable here is implementation timeline. Historical data suggests a phased approach works best."
+    logical: [
+      `For ${topicCore}, I would separate impact into cost, adoption, and long-term risk. Without that structure, we are only trading opinions.`,
+      `Let us test ${topicCore} with a measurable lens: who benefits, who pays, and what changes after six months?`
     ],
-    Leo: [
-      "I appreciate the diverse perspectives here. Both sides raise valid concerns. Perhaps we can find a middle ground that addresses the core issues.",
-      "That's an excellent point. Building on what was said, I think the real opportunity lies in collaborative solutions.",
-      "Let's make sure everyone gets heard. The strongest solutions come from synthesizing different viewpoints."
+    emotional: [
+      `We should not reduce ${topicCore} to only numbers. The human impact matters, especially for people who have less control over the outcome.`,
+      `I understand ${lastSpeaker}'s point, but the lived experience around ${topicCore} can be very different from the policy-level view.`
     ],
-    Kabir: [
-      "Hold on, are we sure we're even asking the right question? The underlying assumption here might be flawed.",
-      "That argument sounds compelling on the surface, but what happens when you stress-test it against edge cases?",
-      "I want to push back on that. Who actually benefits from this framing, and are we ignoring the hidden costs?"
+    leader: [
+      `Let me organize this around ${topicCore}: first impact, second feasibility, third fairness. That will help us reach a balanced conclusion.`,
+      `We are touching many angles, so I suggest we use ${topicCore} to compare short-term gains against long-term consequences.`
+    ],
+    skeptic: [
+      `I want to challenge the assumption behind ${topicCore}. What if the expected benefit happens only for a small group and not everyone?`,
+      `Before accepting that argument on ${topicCore}, we should ask what hidden cost or unintended consequence we are ignoring.`
+    ],
+    balanced: [
+      `Building on ${lastSpeaker}'s point, ${topicCore} needs both practical execution and fairness. A balanced solution should account for both.`,
+      `The stronger view on ${topicCore} may be in the middle: support the opportunity, but define safeguards before scaling it.`
     ]
   };
-  const pool = fallbacks[speakerName] || fallbacks.Sam;
-  const idx = Math.min(transcript.length % pool.length, pool.length - 1);
-  return pool[idx];
+  const promptLower = `${speakerName} ${personaPrompt}`.toLowerCase();
+  const type = promptLower.includes('aggressive') || promptLower.includes('interrupt')
+    ? 'aggressive'
+    : promptLower.includes('logical') || promptLower.includes('data') || promptLower.includes('technical')
+      ? 'logical'
+      : promptLower.includes('emotional') || promptLower.includes('empathy')
+        ? 'emotional'
+        : promptLower.includes('leader') || promptLower.includes('dominant')
+          ? 'leader'
+          : promptLower.includes('skeptic') || promptLower.includes('challenge')
+            ? 'skeptic'
+            : 'balanced';
+  const pool = pools[type];
+  return pool[transcript.length % pool.length];
 };
 
 /**
@@ -451,6 +478,55 @@ Example: ["Topic 1", "Topic 2", "Topic 3"]`;
   ];
 };
 
+const generateTrendingTopics = async (industryContext = 'General / Academic', avoidTopics = []) => {
+  if (hasApiKey && genAI) {
+    try {
+      const model = buildModel({ temperature: 0.8, maxOutputTokens: 360 });
+      const avoidText = Array.isArray(avoidTopics) && avoidTopics.length
+        ? `\nAVOID REPEATING THESE TOPICS:\n${avoidTopics.slice(0, 12).map(topic => `- ${topic}`).join('\n')}\n`
+        : '';
+      const prompt = `Generate 6 fresh, high-interest Group Discussion topics for students and job candidates.
+
+CONTEXT: ${industryContext}
+CURRENT DATE: ${new Date().toISOString().slice(0, 10)}
+${avoidText}
+
+Prefer topics connected to current public discussion areas such as AI, hiring, remote work, education, climate, startups, social media, ethics, technology policy, leadership, and workplace culture.
+
+Rules:
+- Make topics debate-friendly, specific, and suitable for a 2-10 minute GD.
+- Do not repeat or lightly reword the avoided topics.
+- Make each refresh feel new by changing subject areas.
+- Do not include explanations.
+- Return ONLY a JSON array of 6 strings.`;
+
+      const result = await runGeminiRequest('trending-topics', () => model.generateContent(prompt), {
+        maxQueueWaitMs: 20000
+      });
+      const response = await result.response;
+      const topics = JSON.parse(stripJsonFences(response.text()));
+      if (Array.isArray(topics) && topics.length > 0) return topics.slice(0, 6);
+    } catch (err) {
+      console.error('[Gemini ERROR] Trending topics generation failed:', err.message);
+    }
+  }
+
+  return [
+    'Should AI copilots be allowed in campus placements and interviews?',
+    'Is skill-based hiring finally replacing degree-based hiring?',
+    'Will remote work remain a privilege or become a normal workplace model?',
+    'Should social media platforms verify AI-generated content?',
+    'Can climate goals and economic growth be balanced in developing countries?',
+    'Are startups putting too much pressure on young employees?',
+    'Should colleges grade students on teamwork and communication?',
+    'Can India build ethical AI without slowing innovation?',
+    'Are creator careers becoming more realistic than corporate jobs?',
+    'Should companies disclose when customer support is handled by AI?',
+    'Is hustle culture damaging young professionals?',
+    'Should government jobs adapt faster to digital skills?'
+  ].filter(topic => !avoidTopics.includes(topic)).slice(0, 6);
+};
+
 /**
  * Moderate discussion to check for off-topic drift
  */
@@ -544,11 +620,83 @@ Return ONLY raw JSON:
   return fallback;
 };
 
+const runMiniGdTurn = async ({ topic, transcript = [], userText, member = {}, industryContext = 'General / Academic' }) => {
+  const memberName = member.name || 'Meera';
+  const memberRole = member.role || 'Logical Thinker';
+  const personaPrompt = member.prompt || `You are ${memberRole}. Respond naturally in a short GD practice.`;
+  const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
+  const wordCount = String(userText || '').split(/\s+/).filter(Boolean).length;
+  const hasExample = /example|for instance|such as|case|data|study|because|since|recently|in my experience/i.test(userText || '');
+  const hasLink = /therefore|so|this shows|as a result|in conclusion|overall|this means/i.test(userText || '');
+  const fallbackScore = Math.min(100, Math.round(Math.min(wordCount, 45) * 1.25 + (hasExample ? 22 : 0) + (hasLink ? 18 : 0)));
+
+  if (hasApiKey && genAI) {
+    try {
+      const model = buildModel({ temperature: 0.75, topP: 0.9, maxOutputTokens: 420 });
+      const prompt = `You are running a 60-second mini Group Discussion practice.
+
+TOPIC: "${topic}"
+INDUSTRY CONTEXT: ${industryContext}
+
+AI MEMBER:
+Name: ${memberName}
+Role: ${memberRole}
+Persona: ${personaPrompt}
+
+RECENT MINI GD:
+${transcriptFormatted || '(No prior turns)'}
+
+USER JUST SAID:
+"${userText}"
+
+Return ONLY raw JSON:
+{
+  "memberReply": "<${memberName}'s natural 1-2 sentence reply that directly reacts to the user's point and adds one new topic-specific angle>",
+  "coachFeedback": "<one concise coaching sentence about the user's answer quality>",
+  "score": <0-100>,
+  "nextPrompt": "<one short follow-up question ${memberName} asks the user>"
+}
+
+Rules:
+- Do not repeat old generic lines.
+- The member reply must mention a specific issue from the topic.
+- Coach feedback must be honest. If the user says only "hi", "ok", or a very short phrase, score below 15.
+- Keep everything short enough for quick mini practice.`;
+
+      const result = await runGeminiRequest('mini-gd-turn', () => model.generateContent(prompt), {
+        maxQueueWaitMs: 16000
+      });
+      const response = await result.response;
+      const parsed = JSON.parse(stripJsonFences(response.text()));
+      return {
+        memberReply: parsed.memberReply || `${memberName}: Let us connect that more clearly to ${topic}.`,
+        coachFeedback: parsed.coachFeedback || 'Add a clearer reason and example.',
+        score: Math.max(0, Math.min(100, Number(parsed.score) || fallbackScore)),
+        nextPrompt: parsed.nextPrompt || 'Can you add one concrete example?'
+      };
+    } catch (err) {
+      console.error('[Gemini ERROR] Mini GD turn failed:', err.message);
+    }
+  }
+
+  const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
+  return {
+    memberReply: `${memberName}: Your point needs to connect more directly to ${topicCore}. I would ask whether this works in real life and who is affected most.`,
+    coachFeedback: hasExample
+      ? 'Good, you added support. Now make the final link to the topic sharper.'
+      : 'Add one concrete example or data point so it sounds like a real GD answer.',
+    score: fallbackScore,
+    nextPrompt: `Can you give one practical example related to ${topicCore}?`
+  };
+};
+
 module.exports = {
   generateParticipantResponse,
   analyzeGDSession,
   generateResumeTopics,
+  generateTrendingTopics,
   moderateDiscussion,
   analyzeLiveTurn,
+  runMiniGdTurn,
   getRateLimitStatus
 };

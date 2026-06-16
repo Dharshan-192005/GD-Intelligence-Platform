@@ -9,6 +9,7 @@ const {
   getAIResponse,
   getLiveAnalysis,
   getAIStatus,
+  runMiniGdTurn,
   completeSession,
   moderateGD
 } = require('./controllers/sessionController');
@@ -49,17 +50,20 @@ app.get('/api/health', (req, res) => {
 
 // Group Discussion Sessions API Routes
 const topicRoutes = require('./routes/topicRoutes');
+const userDataRoutes = require('./routes/userDataRoutes');
 
 app.post('/api/auth/signup', signup);
 app.post('/api/auth/login', login);
 
 app.use('/api/topics', requireAuth, topicRoutes);
+app.use('/api/user-data', requireAuth, userDataRoutes);
 
 app.post('/api/sessions', requireAuth, createSession);
 app.get('/api/sessions/history', requireAuth, getHistory);
 app.post('/api/sessions/moderate', requireAuth, moderateGD);
 app.post('/api/sessions/generate-response', requireAuth, getAIResponse);
 app.post('/api/sessions/live-analysis', requireAuth, getLiveAnalysis);
+app.post('/api/sessions/mini-gd-turn', requireAuth, runMiniGdTurn);
 app.get('/api/sessions/ai/status', requireAuth, getAIStatus);
 app.get('/api/sessions/:id', requireAuth, getSessionById);
 app.post('/api/sessions/:id/complete', requireAuth, completeSession);

@@ -6,8 +6,43 @@ const SUGGESTED_TOPICS = [
   "AI: A Boon or a Bane for Employment?",
   "Work from Home vs. Office: The Future of Workspace",
   "Social Media: Connecting People or Deepening Loneliness?",
-  "Electric Vehicles: The Ultimate Solution to Pollution?"
+  "Electric Vehicles: The Ultimate Solution to Pollution?",
+  "Should AI tools be allowed in college exams?",
+  "Is remote work weakening team culture?",
+  "Can India become a global AI talent hub?",
+  "Should startups prioritize growth over profitability?",
+  "Are influencers more powerful than traditional media?",
+  "Does social media improve awareness or reduce attention span?",
+  "Should companies hire for skills instead of degrees?",
+  "Is climate responsibility more important than economic growth?",
+  "Will automation create more jobs than it removes?",
+  "Should public speaking be taught in every course?",
+  "Are four-day work weeks practical for Indian companies?",
+  "Does online learning match classroom learning quality?",
+  "Should personal branding matter in placements?",
+  "Is entrepreneurship safer than traditional employment?",
+  "Can electric vehicles truly reduce urban pollution?",
+  "Should governments regulate AI-generated content?",
+  "Are internships more valuable than academic marks?",
+  "Is emotional intelligence more important than IQ at work?",
+  "Should coding be compulsory for all students?"
 ];
+
+const pickDifferentTopics = (currentTopics = [], count = 6) => {
+  const currentSet = new Set(currentTopics);
+  const available = SUGGESTED_TOPICS.filter(item => !currentSet.has(item));
+  const pool = available.length >= count ? available : SUGGESTED_TOPICS;
+  return [...pool].sort(() => Math.random() - 0.5).slice(0, count);
+};
+
+const getTopicCacheKey = () => {
+  try {
+    const user = JSON.parse(localStorage.getItem('gd_user')) || {};
+    return `gd_trending_topics_${user.id || user.email || 'guest'}`;
+  } catch {
+    return 'gd_trending_topics_guest';
+  }
+};
 
 const PERSONA_TEMPLATES = [
   {
@@ -165,11 +200,13 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       return {};
     }
   });
-  const [activeDrill, setActiveDrill] = useState('Opening');
   const [miniGdState, setMiniGdState] = useState('idle');
   const [miniGdTimeLeft, setMiniGdTimeLeft] = useState(60);
+  const [miniGdDuration, setMiniGdDuration] = useState(60);
   const [miniGdInput, setMiniGdInput] = useState('');
   const [miniGdTurns, setMiniGdTurns] = useState([]);
+  const [miniGdMemberIndex, setMiniGdMemberIndex] = useState(0);
+  const [miniGdThinking, setMiniGdThinking] = useState(false);
   const [aiPersonas, setAiPersonas] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('gd_ai_personas')) || PERSONA_TEMPLATES.slice(0, 4);
@@ -178,6 +215,17 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }
   });
   const [activePersonaIndex, setActivePersonaIndex] = useState(0);
+  const [trendingTopics, setTrendingTopics] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(getTopicCacheKey())) || SUGGESTED_TOPICS.slice(0, 6);
+    } catch {
+      return SUGGESTED_TOPICS.slice(0, 6);
+    }
+  });
+  const [isLoadingTopics, setIsLoadingTopics] = useState(false);
+  const miniGdEndRef = useRef(null);
+  const miniGdFeedRef = useRef(null);
+  const miniGdRoundIdRef = useRef(0);
   const fileInputRef = useRef(null);
 
   const authHeaders = () => {
@@ -187,10 +235,12 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
   useEffect(() => {
     fetchHistory();
+    fetchUserScopedData();
+    loadInitialTrendingTopics();
   }, []);
 
   useEffect(() => {
-    if (miniGdState !== 'running') return undefined;
+    if (miniGdState !== 'running' || miniGdDuration === 'unlimited') return undefined;
 
     const timer = setInterval(() => {
       setMiniGdTimeLeft(prev => {
@@ -204,13 +254,100 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [miniGdState]);
+  }, [miniGdState, miniGdDuration]);
+
+  useEffect(() => {
+    if (miniGdFeedRef.current) {
+      window.requestAnimationFrame(() => {
+        miniGdFeedRef.current?.scrollTo({
+          top: miniGdFeedRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      });
+    }
+  }, [miniGdTurns, miniGdThinking]);
 
   const activeEditablePersona = aiPersonas[activePersonaIndex] || aiPersonas[0] || PERSONA_TEMPLATES[0];
 
-  const savePersonas = (nextPersonas) => {
+  const fetchUserScopedData = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/user-data', {
+        headers: authHeaders()
+      });
+      if (!res.ok) throw new Error('Could not load user data');
+      const data = await res.json();
+      if (Array.isArray(data.aiPersonas) && data.aiPersonas.length > 0) {
+        setAiPersonas(data.aiPersonas);
+        localStorage.setItem('gd_ai_personas', JSON.stringify(data.aiPersonas));
+      }
+      if (data.prepState?.checklist) {
+        const checklist = data.prepState.checklist;
+        setPrepChecklist(checklist);
+        localStorage.setItem('gd_prep_checklist', JSON.stringify(checklist));
+      }
+      if (Array.isArray(data.resumeTopics)) {
+        const topics = data.resumeTopics.flatMap((item) => item.topics || []);
+        if (topics.length > 0) setResumeTopics(topics);
+      }
+    } catch (error) {
+      console.warn('Dashboard sync unavailable, using local cache:', error.message);
+    }
+  };
+
+  function loadInitialTrendingTopics() {
+    try {
+      const cachedTopics = JSON.parse(localStorage.getItem(getTopicCacheKey())) || [];
+      if (cachedTopics.length > 0) {
+        setTrendingTopics(cachedTopics);
+        return;
+      }
+    } catch {
+      // Continue to first-load generation.
+    }
+
+    fetchTrendingTopics({ forceRefresh: false });
+  }
+
+  async function fetchTrendingTopics({ forceRefresh = true } = {}) {
+    try {
+      setIsLoadingTopics(true);
+      const query = encodeURIComponent(industryContext || 'General / Academic');
+      const currentTopics = forceRefresh ? trendingTopics : [];
+      const avoid = encodeURIComponent(currentTopics.join('|'));
+      const nonce = Date.now();
+      const res = await fetch(`http://localhost:5000/api/topics/trending?industryContext=${query}&avoid=${avoid}&refresh=${nonce}`, {
+        headers: authHeaders()
+      });
+      if (!res.ok) throw new Error('Failed to load trending topics');
+      const data = await res.json();
+      if (Array.isArray(data.topics) && data.topics.length > 0) {
+        const uniqueTopics = [...new Set(data.topics)].filter(item => !currentTopics.includes(item));
+        const nextTopics = uniqueTopics.length >= 4 ? uniqueTopics.slice(0, 6) : pickDifferentTopics(currentTopics);
+        setTrendingTopics(nextTopics);
+        localStorage.setItem(getTopicCacheKey(), JSON.stringify(nextTopics));
+      }
+    } catch (error) {
+      console.warn('Trending topics fallback used:', error.message);
+      const nextTopics = pickDifferentTopics(forceRefresh ? trendingTopics : []);
+      setTrendingTopics(nextTopics);
+      localStorage.setItem(getTopicCacheKey(), JSON.stringify(nextTopics));
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  }
+
+  const savePersonas = async (nextPersonas) => {
     setAiPersonas(nextPersonas);
     localStorage.setItem('gd_ai_personas', JSON.stringify(nextPersonas));
+    try {
+      await fetch('http://localhost:5000/api/user-data/ai-personas', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ personas: nextPersonas })
+      });
+    } catch (error) {
+      console.warn('AI personas saved locally only:', error.message);
+    }
   };
 
   const updatePersona = (field, value) => {
@@ -239,20 +376,82 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     savePersonas(resetList);
     setActivePersonaIndex(0);
   };
-  const prepFocusItems = [
-    'Speak within the first 20 seconds.',
-    'Disagree politely with one point.',
-    'Summarize before adding a new angle.',
-    'Avoid repeated fillers like ok, yeah, like.'
-  ];
-  const prepCompletedCount = prepFocusItems.filter(item => prepChecklist[item]).length;
-  const prepProgress = Math.round((prepCompletedCount / prepFocusItems.length) * 100);
+
   const completedRuns = history.filter((item) => item.aiEvaluation);
+  const latestRun = completedRuns[0] || null;
   const latestScore = completedRuns.length
     ? Math.round(completedRuns.reduce((total, item) => {
         return total + item.aiEvaluation.leadershipScore + item.aiEvaluation.confidenceScore + item.aiEvaluation.effectivenessScore;
       }, 0) / (completedRuns.length * 3))
     : 0;
+  const averageDimension = (field) => completedRuns.length
+    ? Math.round(completedRuns.reduce((total, item) => total + (item.aiEvaluation?.[field] || 0), 0) / completedRuns.length)
+    : 0;
+  const performanceDimensions = [
+    { key: 'leadershipScore', label: 'Leadership', value: averageDimension('leadershipScore') },
+    { key: 'confidenceScore', label: 'Confidence', value: averageDimension('confidenceScore') },
+    { key: 'effectivenessScore', label: 'Effectiveness', value: averageDimension('effectivenessScore') }
+  ];
+  const weakestDimension = completedRuns.length
+    ? [...performanceDimensions].sort((a, b) => a.value - b.value)[0]
+    : null;
+  const strongestDimension = completedRuns.length
+    ? [...performanceDimensions].sort((a, b) => b.value - a.value)[0]
+    : null;
+  const historyChartData = [...completedRuns].reverse().map((item, index) => {
+    const evaluation = item.aiEvaluation || {};
+    const leadership = evaluation.leadershipScore || 0;
+    const confidence = evaluation.confidenceScore || 0;
+    const effectiveness = evaluation.effectivenessScore || 0;
+
+    return {
+      label: `Round ${index + 1}`,
+      shortLabel: `R${index + 1}`,
+      topic: item.topic,
+      date: new Date(item.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      Overall: Math.round((leadership + confidence + effectiveness) / 3),
+      Leadership: leadership,
+      Confidence: confidence,
+      Effectiveness: effectiveness
+    };
+  });
+  const firstChartPoint = historyChartData[0] || null;
+  const latestChartPoint = historyChartData[historyChartData.length - 1] || null;
+  const trendDelta = latestChartPoint && firstChartPoint ? latestChartPoint.Overall - firstChartPoint.Overall : 0;
+  const bestRound = historyChartData.length
+    ? [...historyChartData].sort((a, b) => b.Overall - a.Overall)[0]
+    : null;
+  const latestMetrics = latestRun?.userMetrics || {};
+  const latestEvaluation = latestRun?.aiEvaluation || {};
+  const latestWeaknesses = latestEvaluation.weaknesses || [];
+  const latestTips = latestEvaluation.actionableTips || [];
+  const prepFocusItems = completedRuns.length ? [
+    latestMetrics.speakingTime < 15
+      ? 'Speak for at least 20 seconds with one complete argument.'
+      : 'Keep speaking share balanced while adding one new point.',
+    (latestMetrics.fillerWordCount || 0) > 2
+      ? `Reduce fillers from ${latestMetrics.fillerWordCount} to 1 or less.`
+      : 'Use deliberate pauses instead of filler words.',
+    weakestDimension?.key === 'effectivenessScore'
+      ? 'Add one example, data point, or real situation before concluding.'
+      : weakestDimension?.key === 'leadershipScore'
+        ? 'Reference another speaker and guide the group toward a conclusion.'
+        : 'Use a calm pace and confident opening sentence.',
+    latestWeaknesses[0] || latestTips[0] || 'Summarize before adding a new angle.'
+  ] : [
+    'Speak within the first 20 seconds.',
+    'Add one example or data point.',
+    'Reference another speaker before adding your point.',
+    'Avoid repeated fillers like ok, yeah, like.'
+  ];
+  const prepCompletedCount = prepFocusItems.filter(item => prepChecklist[item]).length;
+  const checklistProgress = Math.round((prepCompletedCount / prepFocusItems.length) * 100);
+  const prepProgress = completedRuns.length
+    ? Math.round((latestScore * 0.65) + (checklistProgress * 0.35))
+    : checklistProgress;
+  const readinessMessage = completedRuns.length
+    ? `Based on your latest ${completedRuns.length} completed round${completedRuns.length > 1 ? 's' : ''}, your weakest area is ${weakestDimension?.label || 'structure'}.`
+    : 'Complete one GD round to unlock performance-based readiness and targets.';
 
   async function fetchHistory() {
     try {
@@ -281,6 +480,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       setUploadError(null);
       const formData = new FormData();
       formData.append('resume', file);
+      formData.append('industryContext', industryContext);
 
       const res = await fetch('http://localhost:5000/api/topics/from-resume', {
         method: 'POST',
@@ -369,50 +569,110 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     onChangeSection?.('setup');
   };
 
-  const togglePrepItem = (item) => {
-    setPrepChecklist(prev => {
-      const next = { ...prev, [item]: !prev[item] };
-      localStorage.setItem('gd_prep_checklist', JSON.stringify(next));
-      return next;
-    });
-  };
+  const miniGdMember = aiPersonas[miniGdMemberIndex] || aiPersonas[0] || PERSONA_TEMPLATES[0];
+  const visibleMiniGdTurns = miniGdTurns.filter(turn => turn.speaker !== 'Coach');
+  const miniGdUserTurns = miniGdTurns.filter(turn => turn.speaker === 'You');
+  const latestMiniCoachTurn = [...miniGdTurns].reverse().find(turn => turn.speaker === 'Coach');
+  const latestMiniScore = Number(latestMiniCoachTurn?.text?.match(/score:\s*(\d+)/i)?.[1]);
+  const miniGdWordCount = miniGdUserTurns.reduce((total, turn) => total + turn.text.split(/\s+/).filter(Boolean).length, 0);
+  const miniGdExampleCount = miniGdUserTurns.filter(turn => /example|for instance|such as|case|data|study|because|since|survey|report|company|real/i.test(turn.text)).length;
+  const miniGdFillerCount = miniGdUserTurns.reduce((total, turn) => {
+    const matches = turn.text.toLowerCase().match(/\b(ok|okay|yeah|like|um|uh)\b/g);
+    return total + (matches?.length || 0);
+  }, 0);
+  const miniGdFinalScore = Number.isFinite(latestMiniScore)
+    ? latestMiniScore
+    : Math.min(100, Math.round((miniGdWordCount * 1.1) + (miniGdExampleCount * 18) - (miniGdFillerCount * 6)));
+  const miniGdResultFocus = miniGdUserTurns.length === 0
+    ? 'Start with one complete answer before the timer ends.'
+    : miniGdExampleCount === 0
+      ? 'Add one practical example or data point to make your GD answer credible.'
+      : miniGdFillerCount > 1
+        ? 'Reduce fillers and keep your answer crisp.'
+        : 'Good structure. Finish with a stronger conclusion that links back to the topic.';
+  const miniGdClockLabel = miniGdDuration === 'unlimited'
+    ? 'Unlimited'
+    : `${Math.floor(miniGdTimeLeft / 60)}:${String(miniGdTimeLeft % 60).padStart(2, '0')}`;
 
   const startMiniGd = () => {
-    setMiniGdTimeLeft(60);
+    miniGdRoundIdRef.current += 1;
+    setMiniGdTimeLeft(miniGdDuration === 'unlimited' ? 0 : miniGdDuration);
+    setMiniGdInput('');
+    setMiniGdThinking(false);
     setMiniGdTurns([
       {
         speaker: 'Coach',
-        text: `Mini GD started. Topic: ${topic}. Give one clear point with reason and example.`
+        text: `Mini GD started. Topic: ${topic}. You are speaking with ${miniGdMember.name}, ${miniGdMember.role}. Give one clear point with reason and example.`
       },
       {
-        speaker: 'Meera',
-        text: 'I think we should evaluate this through measurable impact, not just opinions.'
+        speaker: miniGdMember.name,
+        text: miniGdMember.initialIntro || `I want to hear your first clear view on ${topic}.`
       }
     ]);
     setMiniGdState('running');
   };
 
-  const submitMiniGdTurn = (e) => {
+  const endMiniGd = () => {
+    miniGdRoundIdRef.current += 1;
+    setMiniGdThinking(false);
+    setMiniGdInput('');
+    setMiniGdState('finished');
+  };
+
+  const submitMiniGdTurn = async (e) => {
     e.preventDefault();
     const text = miniGdInput.trim();
-    if (!text) return;
+    if (!text || miniGdThinking) return;
 
-    const words = text.split(/\s+/).filter(Boolean);
-    const hasExample = /example|for instance|such as|case|data|study|because|since/i.test(text);
-    const hasLink = /therefore|so|this shows|as a result|in conclusion|overall/i.test(text);
-    const score = Math.min(100, Math.round(Math.min(words.length, 45) * 1.4 + (hasExample ? 20 : 0) + (hasLink ? 15 : 0)));
-    const coachText = score > 70
-      ? 'Strong structure. Now add one counterpoint or connect it to another speaker.'
-      : hasExample
-        ? 'Good example. Make the final link to the topic sharper.'
-        : 'Add a concrete example or data point to make this sound like a real GD answer.';
-
-    setMiniGdTurns(prev => [
-      ...prev,
-      { speaker: 'You', text },
-      { speaker: 'Coach', text: `${coachText} Quick score: ${score}/100.` }
-    ]);
+    const roundId = miniGdRoundIdRef.current;
     setMiniGdInput('');
+    setMiniGdThinking(true);
+    const nextTurns = [...miniGdTurns, { speaker: 'You', text }];
+    setMiniGdTurns(nextTurns);
+
+    try {
+      const res = await fetch('http://localhost:5000/api/sessions/mini-gd-turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          topic,
+          industryContext,
+          transcript: nextTurns,
+          userText: text,
+          member: miniGdMember
+        })
+      });
+
+      if (!res.ok) throw new Error('Mini GD LLM request failed');
+      const data = await res.json();
+      if (roundId !== miniGdRoundIdRef.current) return;
+      setMiniGdTurns(prev => [
+        ...prev,
+        { speaker: miniGdMember.name, text: data.memberReply },
+        { speaker: 'Coach', text: `${data.coachFeedback} Quick score: ${data.score}/100. ${data.nextPrompt}` }
+      ]);
+    } catch (error) {
+      console.warn('Mini GD fallback used:', error.message);
+      if (roundId !== miniGdRoundIdRef.current) return;
+      const words = text.split(/\s+/).filter(Boolean);
+      const hasExample = /example|for instance|such as|case|data|study|because|since/i.test(text);
+      const score = Math.min(100, Math.round(Math.min(words.length, 45) * 1.3 + (hasExample ? 20 : 0)));
+      setMiniGdTurns(prev => [
+        ...prev,
+        {
+          speaker: miniGdMember.name,
+          text: `${miniGdMember.name}: Connect that more directly to ${topic}. What practical example proves your point?`
+        },
+        {
+          speaker: 'Coach',
+          text: `${hasExample ? 'Good support. Add a sharper conclusion.' : 'Add one example or data point.'} Quick score: ${score}/100.`
+        }
+      ]);
+    } finally {
+      if (roundId === miniGdRoundIdRef.current) {
+        setMiniGdThinking(false);
+      }
+    }
   };
 
   const SectionHeader = ({ icon: Icon, title, description, action }) => (
@@ -518,11 +778,17 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
           </div>
 
           <div className="setup-field">
-            <label>Trending Topics</label>
+            <div className="setup-refresh-label">
+              <label>AI Trending Topics</label>
+              <button type="button" onClick={() => fetchTrendingTopics({ forceRefresh: true })} disabled={isLoadingTopics}>
+                <RefreshCw size={13} className={isLoadingTopics ? 'spinning-icon' : ''} />
+                {isLoadingTopics ? 'Generating' : 'Refresh'}
+              </button>
+            </div>
             <div className="setup-topic-list">
-              {SUGGESTED_TOPICS.map((item, idx) => (
+              {trendingTopics.map((item) => (
                 <button
-                  key={`sug-${idx}`}
+                  key={item}
                   type="button"
                   onClick={() => setTopic(item)}
                   className={`setup-topic-choice ${topic === item ? 'setup-topic-choice-active' : ''}`}
@@ -751,30 +1017,69 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
         </div>
       ) : (
         <>
-          <div className="flat-card" style={{ marginBottom: '24px', padding: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-              <TrendingUp style={{ color: 'var(--primary)' }} size={20} />
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Performance Over Time</h3>
+          <div className="flat-card history-chart-card">
+            <div className="history-chart-header">
+              <div>
+                <div className="history-chart-title">
+                  <TrendingUp size={20} />
+                  <h3>Performance Over Time</h3>
+                </div>
+                <p>Each point is one completed GD round saved to your account. Hover a round to see the topic and date.</p>
+              </div>
+              <span className={`history-trend-pill ${trendDelta >= 0 ? 'positive' : 'negative'}`}>
+                {trendDelta >= 0 ? '+' : ''}{trendDelta} overall
+              </span>
             </div>
-            <div style={{ height: '260px', width: '100%' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={[...history].reverse().filter((h) => h.aiEvaluation).map((h, i) => ({
-                  name: `S${i + 1}`,
-                  Leadership: h.aiEvaluation.leadershipScore,
-                  Confidence: h.aiEvaluation.confidenceScore,
-                  Effectiveness: h.aiEvaluation.effectivenessScore
-                }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.08)" vertical={false} />
-                  <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} />
-                  <Tooltip contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '8px' }} />
-                  <Legend iconType="circle" wrapperStyle={{ fontSize: '0.8rem', paddingTop: '10px' }} />
-                  <Line type="monotone" dataKey="Leadership" stroke="#c084fc" strokeWidth={3} dot={{ r: 4, fill: '#c084fc', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                  <Line type="monotone" dataKey="Confidence" stroke="#22d3ee" strokeWidth={3} dot={{ r: 4, fill: '#22d3ee', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                  <Line type="monotone" dataKey="Effectiveness" stroke="#34d399" strokeWidth={3} dot={{ r: 4, fill: '#34d399', strokeWidth: 0 }} activeDot={{ r: 6 }} />
-                </LineChart>
-              </ResponsiveContainer>
+
+            <div className="history-insight-grid">
+              <div className="history-insight-card">
+                <span>Latest score</span>
+                <strong>{latestChartPoint ? `${latestChartPoint.Overall}%` : 'Pending'}</strong>
+                <small>{latestChartPoint?.topic || 'Complete one scored round'}</small>
+              </div>
+              <div className="history-insight-card">
+                <span>Best round</span>
+                <strong>{bestRound ? `${bestRound.Overall}%` : 'Pending'}</strong>
+                <small>{bestRound ? `${bestRound.label} - ${bestRound.topic}` : 'No scored report yet'}</small>
+              </div>
+              <div className="history-insight-card">
+                <span>Strongest area</span>
+                <strong>{strongestDimension ? `${strongestDimension.label}` : 'Pending'}</strong>
+                <small>{strongestDimension ? `${strongestDimension.value}% average` : 'Finish a round to unlock this'}</small>
+              </div>
+              <div className="history-insight-card focus">
+                <span>Next focus</span>
+                <strong>{weakestDimension ? weakestDimension.label : 'Start scoring'}</strong>
+                <small>{weakestDimension ? `${weakestDimension.value}% average - improve this first` : 'Your coaching report will set this automatically'}</small>
+              </div>
             </div>
+
+            {historyChartData.length ? (
+              <div className="history-chart-shell">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={historyChartData} margin={{ top: 12, right: 24, left: -8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="4 6" stroke="rgba(102, 112, 133, 0.18)" vertical={false} />
+                    <XAxis dataKey="shortLabel" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(value) => `${value}%`} />
+                    <Tooltip
+                      formatter={(value, name) => [`${value}%`, name]}
+                      labelFormatter={(label, payload) => {
+                        const point = payload?.[0]?.payload;
+                        return point ? `${point.label} - ${point.date} - ${point.topic}` : label;
+                      }}
+                      contentStyle={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '10px', boxShadow: 'var(--shadow-soft)' }}
+                    />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '0.8rem', paddingTop: '10px' }} />
+                    <Line type="linear" dataKey="Overall" stroke="#0f766e" strokeWidth={4} dot={{ r: 5, fill: '#0f766e', stroke: '#ffffff', strokeWidth: 2 }} activeDot={{ r: 7 }} />
+                    <Line type="linear" dataKey="Leadership" stroke="#a855f7" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3, fill: '#a855f7', strokeWidth: 0 }} />
+                    <Line type="linear" dataKey="Confidence" stroke="#0891b2" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3, fill: '#0891b2', strokeWidth: 0 }} />
+                    <Line type="linear" dataKey="Effectiveness" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3, fill: '#22c55e', strokeWidth: 0 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="history-empty-chart">Complete one evaluated GD round to generate your personal performance graph.</div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gap: '14px' }}>
@@ -877,26 +1182,30 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
         <div className="flat-card">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <Clock color="var(--accent-blue)" />
+            <TrendingUp color="var(--accent-blue)" />
             <div>
-              <h2 style={{ fontSize: '1.2rem' }}>Quota Strategy</h2>
-              <p style={{ fontSize: '0.9rem' }}>Designed for Gemini free-tier discipline.</p>
+              <h2 style={{ fontSize: '1.2rem' }}>Your Performance Snapshot</h2>
+              <p style={{ fontSize: '0.9rem' }}>
+                {completedRuns.length ? 'Calculated from completed GD reports.' : 'Complete a round to generate personal analytics.'}
+              </p>
             </div>
           </div>
 
           <div style={{ display: 'grid', gap: '14px' }}>
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', fontWeight: 700, marginBottom: '8px' }}>
-                <span>Default request ceiling</span>
-                <span>10 RPM</span>
+                <span>Average coaching score</span>
+                <span>{latestScore ? `${latestScore}%` : 'No data'}</span>
               </div>
-              <div className="quota-meter" style={{ '--meter-width': '67%' }}><span /></div>
+              <div className="quota-meter" style={{ '--meter-width': `${latestScore || 8}%` }}><span /></div>
             </div>
             <p style={{ fontSize: '0.88rem', lineHeight: 1.5 }}>
-              Live coaching is throttled, moderation checks every few turns, and the full report is generated only once at the end.
+              {completedRuns.length
+                ? `Strongest area: ${strongestDimension?.label} (${strongestDimension?.value}%). Next focus: ${weakestDimension?.label} (${weakestDimension?.value}%).`
+                : 'Your first completed GD will unlock personalized strengths, weak areas, and next-round targets.'}
             </p>
-            <button className="btn-primary" type="button" onClick={() => onChangeSection?.('setup')} style={{ width: '100%' }}>
-              <Play size={16} fill="white" /> Start Structured Practice
+            <button className="btn-primary" type="button" onClick={() => onChangeSection?.(completedRuns.length ? 'prep' : 'setup')} style={{ width: '100%' }}>
+              <Play size={16} fill="white" /> {completedRuns.length ? 'Open Personal Prep' : 'Start First Round'}
             </button>
           </div>
         </div>
@@ -917,176 +1226,125 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
         <div>
           <span><Target size={16} /> Learning Progress</span>
           <h2>{prepProgress}% ready for the next round</h2>
-          <p>Track your preparation habits, choose a drill, and keep notes for your next GD attempt.</p>
+          <p>{readinessMessage}</p>
           <div className="prep-progress-bar"><i style={{ width: `${prepProgress}%` }} /></div>
         </div>
         <div className="prep-streak-card">
           <strong>{prepCompletedCount}/{prepFocusItems.length}</strong>
-          <small>focus tasks done</small>
+          <small>{completedRuns.length ? 'performance tasks done' : 'focus tasks done'}</small>
         </div>
-      </div>
-
-      <div className="prep-drill-tabs">
-        {['Opening', 'Counter', 'Summary', 'Evidence'].map((drill) => (
-          <button
-            key={drill}
-            type="button"
-            className={activeDrill === drill ? 'is-active' : ''}
-            onClick={() => setActiveDrill(drill)}
-          >
-            {drill}
-          </button>
-        ))}
       </div>
 
       <div className="flat-card mini-gd-lab">
         <div className="mini-gd-header">
           <div>
             <span><Radio size={16} /> Working Mini GD</span>
-            <h2>Practice a 60-second live response</h2>
+            <h2>Practice a live GD response</h2>
             <p>Start a small GD simulation, reply to the prompt, and get instant coaching before entering the full arena.</p>
           </div>
-          <div className="mini-gd-clock">{Math.floor(miniGdTimeLeft / 60)}:{String(miniGdTimeLeft % 60).padStart(2, '0')}</div>
+          <div className={`mini-gd-clock ${miniGdDuration === 'unlimited' ? 'is-unlimited' : ''}`}>{miniGdClockLabel}</div>
         </div>
 
         <div className="mini-gd-body">
-          <div className="mini-gd-feed">
-            {(miniGdTurns.length ? miniGdTurns : [
-              { speaker: 'Coach', text: 'Press Start Mini GD to begin a quick practice simulation.' }
-            ]).map((turn, idx) => (
+          <div className="mini-gd-chat-panel">
+            <div className="mini-gd-feed" ref={miniGdFeedRef}>
+              {(visibleMiniGdTurns.length ? visibleMiniGdTurns : [
+                { speaker: 'System', text: 'Press Start Mini GD to begin a quick practice simulation.' }
+              ]).map((turn, idx) => (
               <div key={`${turn.speaker}-${idx}`} className={`mini-gd-message ${turn.speaker === 'You' ? 'is-user' : ''}`}>
                 <strong>{turn.speaker}</strong>
                 <p>{turn.text}</p>
               </div>
-            ))}
+              ))}
+              {miniGdThinking && (
+                <div className="mini-gd-message">
+                  <strong>{miniGdMember.name}</strong>
+                  <p>Thinking about your point...</p>
+                </div>
+              )}
+              <div ref={miniGdEndRef} />
+            </div>
+
+            <form className="mini-gd-input-row" onSubmit={submitMiniGdTurn}>
+              <input
+                value={miniGdInput}
+                onChange={(e) => setMiniGdInput(e.target.value)}
+                disabled={miniGdState !== 'running' || miniGdThinking}
+                placeholder={miniGdState === 'running' ? `Reply to ${miniGdMember.name}...` : 'Start Mini GD to unlock response box'}
+              />
+              <button type="submit" className="btn-secondary" disabled={miniGdState !== 'running' || miniGdThinking || !miniGdInput.trim()}>
+                {miniGdThinking ? 'Thinking' : 'Send'}
+              </button>
+            </form>
           </div>
 
           <div className="mini-gd-side">
-            <button type="button" className="btn-primary" onClick={startMiniGd}>
-              <Play size={16} fill="white" />
-              {miniGdState === 'running' ? 'Restart Mini GD' : 'Start Mini GD'}
-            </button>
             <div className="mini-gd-coach-card">
-              <strong>Answer Formula</strong>
-              <span>Point + Reason + Example + Link</span>
+              <strong>Practice Member</strong>
+              <select
+                value={miniGdMemberIndex}
+                onChange={(e) => setMiniGdMemberIndex(Number(e.target.value))}
+                disabled={miniGdState === 'running'}
+              >
+                {aiPersonas.map((persona, index) => (
+                  <option key={`${persona.name}-${index}`} value={index}>
+                    {persona.name} - {persona.role}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="mini-gd-coach-card">
-              <strong>Target</strong>
-              <span>35-55 words, one example, one clear conclusion.</span>
+              <strong>Practice Time</strong>
+              <select
+                value={miniGdDuration}
+                onChange={(e) => {
+                  const value = e.target.value === 'unlimited' ? 'unlimited' : Number(e.target.value);
+                  setMiniGdDuration(value);
+                  setMiniGdTimeLeft(value === 'unlimited' ? 0 : value);
+                }}
+                disabled={miniGdState === 'running'}
+              >
+                <option value={60}>1 minute</option>
+                <option value={120}>2 minutes</option>
+                <option value={300}>5 minutes</option>
+                <option value={600}>10 minutes</option>
+                <option value="unlimited">Unlimited practice</option>
+              </select>
             </div>
-          </div>
-        </div>
-
-        <form className="mini-gd-input-row" onSubmit={submitMiniGdTurn}>
-          <input
-            value={miniGdInput}
-            onChange={(e) => setMiniGdInput(e.target.value)}
-            disabled={miniGdState !== 'running'}
-            placeholder={miniGdState === 'running' ? 'Type your GD response here...' : 'Start Mini GD to unlock response box'}
-          />
-          <button type="submit" className="btn-secondary" disabled={miniGdState !== 'running' || !miniGdInput.trim()}>
-            Send
-          </button>
-        </form>
-      </div>
-
-      <div className="prep-coach-grid">
-        <div className="flat-card prep-panel">
-          <div className="prep-panel-title">
-            <MessageSquare size={20} />
-            <div>
-              <h2>{activeDrill} Drill</h2>
-              <p>Practice a reusable sentence pattern before entering the live room.</p>
-            </div>
-          </div>
-          <div className="prep-script-list">
-            {{
-              Opening: [
-                `I would like to frame this topic around impact, risk, and long-term opportunity.`,
-                `My view is balanced: the issue has real benefits, but only if implementation is responsible.`,
-                `Before taking a side, I think we should define who is affected and what success looks like.`
-              ],
-              Counter: [
-                `I see the logic in that point, but I would challenge the assumption behind it.`,
-                `That is useful, but it may not hold true for every stakeholder involved.`,
-                `I partially agree, though the practical constraint is worth considering.`
-              ],
-              Summary: [
-                `To summarize, the discussion has two strong sides: opportunity and risk.`,
-                `The group seems to agree on the need for balance, but differs on execution.`,
-                `My final view is that the solution should be practical, inclusive, and measurable.`
-              ],
-              Evidence: [
-                `A useful example here is how companies use pilot programs before scaling decisions.`,
-                `We can look at this through cost, adoption, and long-term impact.`,
-                `A data-backed point would compare short-term disruption with long-term productivity.`
-              ]
-            }[activeDrill].map((line) => (
-              <button key={line} type="button" onClick={() => setMiniGdInput(line)}>
-                {line}
+            <div className="mini-gd-action-stack">
+              <button type="button" className="btn-primary" onClick={startMiniGd}>
+                <Play size={16} fill="white" />
+                {miniGdState === 'running' ? 'Restart Mini GD' : 'Start Mini GD'}
               </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flat-card prep-panel">
-          <div className="prep-panel-title">
-            <CheckCircle2 size={20} />
-            <div>
-              <h2>Argument Framework</h2>
-              <p>Follow this structure for every major contribution.</p>
+              {miniGdState === 'running' && (
+                <button type="button" className="btn-danger mini-gd-end-button" onClick={endMiniGd}>
+                  End Mini GD
+                </button>
+              )}
+            </div>
+            <div className="mini-gd-status-card">
+              <span>Status</span>
+              <strong>{miniGdState === 'finished' ? 'Completed' : miniGdState === 'running' ? 'Live practice' : 'Ready'}</strong>
+              <small>{miniGdState === 'running' ? 'Only new messages scroll inside the chat.' : 'Choose a member and start when ready.'}</small>
             </div>
           </div>
-          <div className="prep-framework">
-            {[
-              ['Point', 'State your position in one sentence.'],
-              ['Reason', 'Explain why it matters.'],
-              ['Example', 'Add a real-world case, number, or situation.'],
-              ['Link', 'Connect back to the topic or previous speaker.']
-            ].map(([label, text], idx) => (
-              <div key={label}>
-                <span>{idx + 1}</span>
-                <strong>{label}</strong>
-                <p>{text}</p>
-              </div>
-            ))}
-          </div>
         </div>
 
-        <div className="flat-card prep-panel">
-          <div className="prep-panel-title">
-            <Mic size={20} />
+        {miniGdState === 'finished' && (
+          <div className="mini-gd-result">
             <div>
-              <h2>Speaking Targets</h2>
-              <p>Keep these goals in mind during the round.</p>
+              <span>Mini GD Result</span>
+              <h3>{miniGdFinalScore}/100</h3>
+              <p>{latestMiniCoachTurn?.text?.replace(/Quick score:\s*\d+\/100\.?/i, '').trim() || miniGdResultFocus}</p>
+            </div>
+            <div className="mini-gd-result-metrics">
+              <small><strong>{miniGdUserTurns.length}</strong> replies</small>
+              <small><strong>{miniGdWordCount}</strong> words</small>
+              <small><strong>{miniGdExampleCount}</strong> examples</small>
+              <small><strong>{miniGdFillerCount}</strong> fillers</small>
             </div>
           </div>
-          <div className="prep-targets">
-            <div><strong>2</strong><span>complete points</span></div>
-            <div><strong>1</strong><span>example or data point</span></div>
-            <div><strong>0</strong><span>one-word replies</span></div>
-            <div><strong>1</strong><span>speaker reference</span></div>
-          </div>
-        </div>
-
-        <div className="flat-card prep-panel">
-          <div className="prep-panel-title">
-            <Sparkles size={20} />
-            <div>
-              <h2>Next Round Focus</h2>
-              <p>A short checklist to make the practice feel like a real GD.</p>
-            </div>
-          </div>
-          <div className="prep-checklist">
-            {prepFocusItems.map((item) => (
-              <label key={item}>
-                <input type="checkbox" checked={Boolean(prepChecklist[item])} onChange={() => togglePrepItem(item)} />
-                <span>{item}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
+        )}
       </div>
     </>
   );

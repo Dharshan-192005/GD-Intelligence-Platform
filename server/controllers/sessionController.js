@@ -2,6 +2,7 @@ const Session = require('../models/Session');
 const geminiService = require('../services/geminiService');
 const { checkInMemoryMode } = require('../config/db');
 const mongoose = require('mongoose');
+const UserProgress = require('../models/UserProgress');
 
 // In-memory data store fallback if MongoDB is not running
 const inMemorySessions = [];
@@ -180,13 +181,36 @@ const getAIStatus = (req, res) => {
   return res.json(geminiService.getRateLimitStatus());
 };
 
+const runMiniGdTurn = async (req, res) => {
+  try {
+    const { topic, transcript, userText, member, industryContext } = req.body;
+
+    if (!topic || !userText) {
+      return res.status(400).json({ error: 'Topic and user response are required.' });
+    }
+
+    const result = await geminiService.runMiniGdTurn({
+      topic,
+      transcript: transcript || [],
+      userText,
+      member: member || {},
+      industryContext
+    });
+
+    return res.json({ ...result, rateLimit: geminiService.getRateLimitStatus() });
+  } catch (error) {
+    console.error('Mini GD Turn Error:', error);
+    return res.status(500).json({ error: 'Failed to run mini GD turn.' });
+  }
+};
+
 /**
  * Complete session, save transcript, and run Gemini analytics
  */
 const completeSession = async (req, res) => {
   try {
     const { id } = req.params;
-    const { transcript, userMetrics, participationBreakdown } = req.body;
+    const { transcript, userMetrics, participationBreakdown, roundNotes } = req.body;
     if (!validateMongoId(id, res)) return;
 
     if (!transcript) {
@@ -221,6 +245,7 @@ const completeSession = async (req, res) => {
       transcript,
       userMetrics: userMetrics || session.userMetrics,
       participationBreakdown: participationBreakdown || [],
+      roundNotes: roundNotes || session.roundNotes || '',
       aiEvaluation,
       isCompleted: true
     };
@@ -239,6 +264,24 @@ const completeSession = async (req, res) => {
         { new: true }
       );
       console.log(`[MongoDB] Saved completed session: ${id}`);
+      const averageScore = Math.round((
+        (aiEvaluation.leadershipScore || 0) +
+        (aiEvaluation.confidenceScore || 0) +
+        (aiEvaluation.effectivenessScore || 0)
+      ) / 3);
+      await UserProgress.findOneAndUpdate(
+        { userId: req.user.id },
+        {
+          $inc: { completedSessions: 1 },
+          $set: { averageScore },
+          $push: {
+            fillerWordTrend: { date: new Date(), count: userMetrics?.fillerWordCount || 0 },
+            confidenceTrend: { date: new Date(), score: aiEvaluation.confidenceScore || 0 },
+            weakPhraseHistory: { $each: (aiEvaluation.suggestedPhrases || []).map(item => item.original).filter(Boolean).slice(0, 5) }
+          }
+        },
+        { upsert: true, new: true }
+      );
       return res.json(updatedSession);
     }
   } catch (error) {
@@ -275,6 +318,7 @@ module.exports = {
   getAIResponse,
   getLiveAnalysis,
   getAIStatus,
+  runMiniGdTurn,
   completeSession,
   moderateGD
 };

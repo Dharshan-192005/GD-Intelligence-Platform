@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Dashboard from './pages/Dashboard';
 import GDArena from './pages/GDArena';
 import AnalyticsReport from './pages/AnalyticsReport';
@@ -47,6 +47,45 @@ export default function App() {
     }
   });
 
+  const authHeaders = () => {
+    const token = localStorage.getItem('gd_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  const loadAccountData = async () => {
+    const token = localStorage.getItem('gd_token');
+    if (!token) return;
+
+    try {
+      const res = await fetch('http://localhost:5000/api/user-data', {
+        headers: authHeaders()
+      });
+      if (!res.ok) throw new Error('Could not load account data');
+      const data = await res.json();
+
+      const savedUser = JSON.parse(localStorage.getItem('gd_user')) || currentUser || {};
+      const mergedUser = { ...savedUser, ...(data.profile || {}) };
+      localStorage.setItem('gd_user', JSON.stringify(mergedUser));
+      if (data.profile?.settings) localStorage.setItem('gd_settings', JSON.stringify(data.profile.settings));
+      if (data.aiPersonas) localStorage.setItem('gd_ai_personas', JSON.stringify(data.aiPersonas));
+      if (data.prepState?.checklist) localStorage.setItem('gd_prep_checklist', JSON.stringify(data.prepState.checklist));
+
+      setCurrentUser(mergedUser);
+      setProfileDraft(mergedUser);
+      if (data.profile?.settings) setSettingsDraft(data.profile.settings);
+    } catch (error) {
+      console.warn('Account sync unavailable, using local cache:', error.message);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser) {
+      const syncTimer = setTimeout(loadAccountData, 0);
+      return () => clearTimeout(syncTimer);
+    }
+    return undefined;
+  }, [currentUser?.id]);
+
   const dashboardNavItems = [
     { id: 'overview', label: 'Overview', icon: Home },
     { id: 'setup', label: 'Setup GD', icon: Settings },
@@ -70,6 +109,7 @@ export default function App() {
     setCurrentUser(user);
     setProfileDraft(user);
     setCurrentPage('dashboard');
+    setTimeout(loadAccountData, 0);
   };
 
   const handleSignOut = () => {
@@ -114,7 +154,7 @@ export default function App() {
     setProfileDraft(prev => ({ ...prev, [field]: value }));
   };
 
-  const saveProfile = (e) => {
+  const saveProfile = async (e) => {
     e.preventDefault();
     const updatedUser = {
       ...currentUser,
@@ -125,6 +165,15 @@ export default function App() {
 
     localStorage.setItem('gd_user', JSON.stringify(updatedUser));
     setCurrentUser(updatedUser);
+    try {
+      await fetch('http://localhost:5000/api/user-data/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(updatedUser)
+      });
+    } catch (error) {
+      console.warn('Profile saved locally only:', error.message);
+    }
     setIsProfileOpen(false);
   };
 
@@ -132,9 +181,18 @@ export default function App() {
     setSettingsDraft(prev => ({ ...prev, [field]: value }));
   };
 
-  const saveSettings = (e) => {
+  const saveSettings = async (e) => {
     e.preventDefault();
     localStorage.setItem('gd_settings', JSON.stringify(settingsDraft));
+    try {
+      await fetch('http://localhost:5000/api/user-data/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ settings: settingsDraft })
+      });
+    } catch (error) {
+      console.warn('Settings saved locally only:', error.message);
+    }
     setIsSettingsOpen(false);
   };
 

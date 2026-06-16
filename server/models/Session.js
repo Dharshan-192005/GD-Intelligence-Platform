@@ -71,6 +71,11 @@ const SessionSchema = new mongoose.Schema({
     }
   ],
 
+  roundNotes: {
+    type: String,
+    default: ''
+  },
+
   // Gemini AI performance diagnostic
   aiEvaluation: {
     leadershipScore: { type: Number, default: 0 }, // 1-100

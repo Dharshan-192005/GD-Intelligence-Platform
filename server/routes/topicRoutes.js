@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { generateTopicsFromResume } = require('../controllers/topicController');
+const { generateTopicsFromResume, generateTrendingTopics } = require('../controllers/topicController');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -9,5 +9,6 @@ const upload = multer({
 });
 
 router.post('/from-resume', upload.single('resume'), generateTopicsFromResume);
+router.get('/trending', generateTrendingTopics);
 
 module.exports = router;
