@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Play, Sparkles, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw, Settings, Target, MessageCircle, Radio, ThumbsUp, ThumbsDown, Send, MessageSquare } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import LiveMeeting from './LiveMeeting';
 
 const SUGGESTED_TOPICS = [
   "AI: A Boon or a Bane for Employment?",
@@ -1731,6 +1732,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
       {activeSection === 'setup' && renderSetup()}
       {activeSection === 'prep' && renderPrepCoach()}
+      {activeSection === 'meeting' && <LiveMeeting currentUser={currentUser} defaultTopic={topic} />}
       {activeSection === 'innovation' && renderInnovationLab()}
       {activeSection === 'members' && renderMembers()}
       {activeSection === 'history' && renderHistory()}

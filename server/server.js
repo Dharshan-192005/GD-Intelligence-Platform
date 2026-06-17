@@ -55,6 +55,7 @@ app.get('/api/health', (req, res) => {
 const topicRoutes = require('./routes/topicRoutes');
 const userDataRoutes = require('./routes/userDataRoutes');
 const forumRoutes = require('./routes/forumRoutes');
+const meetingRoutes = require('./routes/meetingRoutes');
 
 app.post('/api/auth/signup', signup);
 app.post('/api/auth/login', login);
@@ -62,6 +63,7 @@ app.post('/api/auth/login', login);
 app.use('/api/topics', requireAuth, topicRoutes);
 app.use('/api/user-data', requireAuth, userDataRoutes);
 app.use('/api/forum', requireAuth, forumRoutes);
+app.use('/api/meetings', requireAuth, meetingRoutes);
 
 app.post('/api/sessions', requireAuth, createSession);
 app.get('/api/sessions/history', requireAuth, getHistory);
@@ -85,6 +87,28 @@ app.use((err, req, res, next) => {
 });
 
 // Socket.io integration
+const meetingParticipants = new Map();
+
+const getRoomParticipants = (roomCode) => Array.from(meetingParticipants.get(roomCode)?.values() || []);
+
+const removeSocketFromMeetings = (socket) => {
+  meetingParticipants.forEach((participants, roomCode) => {
+    const participant = participants.get(socket.id);
+    if (!participant) return;
+
+    participants.delete(socket.id);
+    socket.to(roomCode).emit('meeting:participant-left', {
+      socketId: socket.id,
+      participant
+    });
+    io.to(roomCode).emit('meeting:participants', getRoomParticipants(roomCode));
+
+    if (participants.size === 0) {
+      meetingParticipants.delete(roomCode);
+    }
+  });
+};
+
 io.on('connection', (socket) => {
   console.log(`[Socket] User connected: ${socket.id}`);
 
@@ -101,7 +125,67 @@ io.on('connection', (socket) => {
     socket.to(data.roomId).emit('sync-state', data.state);
   });
 
+  socket.on('meeting:join', ({ roomCode, user }) => {
+    const code = String(roomCode || '').trim().toUpperCase();
+    if (!code) return;
+
+    socket.join(code);
+    const participant = {
+      socketId: socket.id,
+      name: user?.name || 'Participant',
+      email: user?.email || '',
+      profilePhoto: user?.profilePhoto || '',
+      micOn: user?.micOn !== false,
+      cameraOn: user?.cameraOn !== false,
+      joinedAt: new Date()
+    };
+
+    if (!meetingParticipants.has(code)) {
+      meetingParticipants.set(code, new Map());
+    }
+
+    meetingParticipants.get(code).set(socket.id, participant);
+    socket.emit('meeting:participants', getRoomParticipants(code));
+    socket.to(code).emit('meeting:participant-joined', participant);
+    io.to(code).emit('meeting:participants', getRoomParticipants(code));
+  });
+
+  socket.on('meeting:chat', ({ roomCode, message }) => {
+    const code = String(roomCode || '').trim().toUpperCase();
+    if (!code || !message) return;
+    socket.to(code).emit('meeting:chat', message);
+  });
+
+  socket.on('meeting:signal', ({ roomCode, targetSocketId, signal }) => {
+    const code = String(roomCode || '').trim().toUpperCase();
+    if (!code || !targetSocketId || !signal) return;
+    io.to(targetSocketId).emit('meeting:signal', {
+      roomCode: code,
+      fromSocketId: socket.id,
+      signal
+    });
+  });
+
+  socket.on('meeting:media-state', ({ roomCode, micOn, cameraOn }) => {
+    const code = String(roomCode || '').trim().toUpperCase();
+    const participants = meetingParticipants.get(code);
+    const participant = participants?.get(socket.id);
+    if (!participant) return;
+
+    participant.micOn = micOn;
+    participant.cameraOn = cameraOn;
+    participants.set(socket.id, participant);
+    io.to(code).emit('meeting:participants', getRoomParticipants(code));
+  });
+
+  socket.on('meeting:leave', ({ roomCode }) => {
+    const code = String(roomCode || '').trim().toUpperCase();
+    if (code) socket.leave(code);
+    removeSocketFromMeetings(socket);
+  });
+
   socket.on('disconnect', () => {
+    removeSocketFromMeetings(socket);
     console.log(`[Socket] User disconnected: ${socket.id}`);
   });
 });

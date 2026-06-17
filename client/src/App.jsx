@@ -5,7 +5,7 @@ import AnalyticsReport from './pages/AnalyticsReport';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import { Sparkles, MessageCircle, BrainCircuit, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target } from 'lucide-react';
+import { Sparkles, MessageCircle, BrainCircuit, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target, Video } from 'lucide-react';
 import bgImage from './assets/bg-mountain.png';
 import './App.css';
 
@@ -131,6 +131,7 @@ export default function App() {
   const dashboardNavItems = [
     { id: 'setup', label: 'Start a GD', icon: Settings },
     { id: 'prep', label: 'Quick Practice', icon: Target },
+    { id: 'meeting', label: 'Live Meeting', icon: Video },
     { id: 'innovation', label: 'Ask Community', icon: MessageCircle },
     { id: 'members', label: 'AI Panel', icon: Users },
     { id: 'history', label: 'My Progress', icon: BarChart2 }
