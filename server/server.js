@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { connectDB } = require('./config/db');
+const { connectDB, getDatabaseStatus } = require('./config/db');
 const {
   createSession,
   getHistory,
@@ -41,22 +41,27 @@ app.use(express.json());
 
 // Global health check endpoint
 app.get('/api/health', (req, res) => {
+  const database = getDatabaseStatus();
   res.json({
     status: 'healthy',
     timestamp: new Date(),
-    database: require('./config/db').checkInMemoryMode() ? 'in-memory (demo)' : 'mongodb'
+    database: database.mode,
+    persistentStorage: database.isPersistent,
+    databaseError: database.lastConnectionError || null
   });
 });
 
 // Group Discussion Sessions API Routes
 const topicRoutes = require('./routes/topicRoutes');
 const userDataRoutes = require('./routes/userDataRoutes');
+const forumRoutes = require('./routes/forumRoutes');
 
 app.post('/api/auth/signup', signup);
 app.post('/api/auth/login', login);
 
 app.use('/api/topics', requireAuth, topicRoutes);
 app.use('/api/user-data', requireAuth, userDataRoutes);
+app.use('/api/forum', requireAuth, forumRoutes);
 
 app.post('/api/sessions', requireAuth, createSession);
 app.get('/api/sessions/history', requireAuth, getHistory);

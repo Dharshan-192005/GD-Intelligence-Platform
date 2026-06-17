@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Sparkles, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw, Settings, Home, Target, MessageSquare, CheckCircle2, Mic, Lightbulb, Flame, Brain, Trophy, Radio, ShieldCheck } from 'lucide-react';
+import { Play, Sparkles, Clock, Users, Calendar, BarChart2, AlertCircle, TrendingUp, Upload, FileText, RefreshCw, Settings, Target, MessageCircle, Radio, ThumbsUp, ThumbsDown, Send, MessageSquare } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 
 const SUGGESTED_TOPICS = [
@@ -33,6 +33,113 @@ const pickDifferentTopics = (currentTopics = [], count = 6) => {
   const available = SUGGESTED_TOPICS.filter(item => !currentSet.has(item));
   const pool = available.length >= count ? available : SUGGESTED_TOPICS;
   return [...pool].sort(() => Math.random() - 0.5).slice(0, count);
+};
+
+const analyzeMiniGdInput = (text = '') => {
+  const cleaned = String(text).trim();
+  const words = cleaned.toLowerCase().match(/[a-z0-9]+/g) || [];
+  const repeatedCharacterRun = /(.)\1{7,}/i.test(cleaned.replace(/\s+/g, ''));
+  const longSingleToken = words.some(word => word.length > 24);
+  const alphabeticChars = cleaned.match(/[a-z]/gi) || [];
+  const uniqueLetters = new Set(alphabeticChars.map(char => char.toLowerCase()));
+  const lowLetterVariety = alphabeticChars.length > 18 && uniqueLetters.size <= 3;
+  const shortCasualReply = /^(hi|hello|hey|ok|okay|yes|no|hmm|mm|fine|good)[.!?\s]*$/i.test(cleaned);
+  const uniqueWords = new Set(words);
+  const lowWordDiversity = words.length >= 5 && uniqueWords.size <= Math.max(2, Math.ceil(words.length * 0.35));
+
+  return {
+    cleaned,
+    words,
+    wordCount: words.length,
+    isGibberish: !cleaned || shortCasualReply || repeatedCharacterRun || longSingleToken || lowLetterVariety || lowWordDiversity
+  };
+};
+
+const buildMiniGdLocalTurn = ({ topic, text, member, turnCount }) => {
+  const input = analyzeMiniGdInput(text);
+  const role = String(member?.role || '').toLowerCase();
+  const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
+  const hasExample = /example|for instance|such as|case|data|study|because|since|company|report/i.test(text);
+  const hasLink = /therefore|so|this shows|as a result|in conclusion|overall|this means/i.test(text);
+
+  if (input.isGibberish) {
+    const replies = [
+      `I cannot count that as a GD point yet. Give one complete sentence on whether AI helps or harms employment.`,
+      `That looks like random or incomplete text. Take a clear stand on ${topicCore} first.`,
+      `In a real GD, this would not move the discussion. Say one practical impact of AI on jobs.`
+    ];
+    return {
+      memberReply: replies[turnCount % replies.length],
+      coachFeedback: 'This is not a meaningful GD answer yet. Use a clear point with a reason.',
+      score: Math.min(8, Math.max(1, input.wordCount)),
+      nextPrompt: `Write one proper sentence about ${topicCore}.`
+    };
+  }
+
+  const aggressive = [
+    `Good start, but it is still broad. Name who is affected by AI: freshers, employees, companies, or customers.`,
+    `Let me challenge that like a tough evaluator: what proof shows this actually happens in workplaces?`,
+    `Make it sharper. Is AI replacing jobs or changing the skills needed for jobs?`
+  ];
+  const logical = [
+    `Let us measure it. Are you arguing about productivity, job loss, reskilling, or hiring quality?`,
+    `Separate short-term disruption from long-term opportunity. Which one does your point support?`,
+    `Add one example or data point so your argument becomes testable.`
+  ];
+  const neutral = [
+    `Link that directly to ${topicCore}. Add one reason and one example.`,
+    `That can work if you complete it with point, reason, example, and conclusion.`,
+    `Push it further. How would you respond if another speaker disagrees?`
+  ];
+  const pool = role.includes('aggressive') || role.includes('dominant') || role.includes('interrupt')
+    ? aggressive
+    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
+      ? logical
+      : neutral;
+  const score = Math.min(82, Math.round(Math.min(input.wordCount, 55) * 1.2 + (hasExample ? 24 : 0) + (hasLink ? 16 : 0)));
+
+  return {
+    memberReply: pool[turnCount % pool.length],
+    coachFeedback: hasExample ? 'Good support. Now add a sharper conclusion.' : 'The point is understandable, but it needs one concrete example.',
+    score,
+    nextPrompt: hasExample ? `Can you conclude your stand on ${topicCore}?` : `Can you give one practical example related to ${topicCore}?`
+  };
+};
+
+const stripMiniGdSpeakerPrefix = (text = '') => (
+  String(text).replace(/^\s*(aarav|sam|meera|leo|kabir|coach|teacher)\s*:\s*/i, '').trim()
+);
+
+const getPersonaKey = (persona, index) => persona?._id || `${persona?.name || 'persona'}-${index}`;
+
+const buildSessionPersona = (persona = {}, index = 0) => {
+  const name = persona.name || `AI ${index + 1}`;
+  const role = persona.role || 'AI Participant';
+  const style = persona.style || 'Balanced and professional';
+  const desc = persona.desc || '';
+  const pressure = Math.max(0, Math.min(100, Number(persona.pressure) || 60));
+  const initialIntro = persona.initialIntro || desc || `I will contribute as ${role}.`;
+  const customPrompt = persona.prompt || '';
+
+  return {
+    name,
+    role,
+    color: persona.color || '#0f766e',
+    style,
+    pressure,
+    desc,
+    initialIntro,
+    prompt: [
+      `You are ${name}, a realistic Group Discussion participant.`,
+      `Role/personality: ${role}.`,
+      `Way of speech: ${style}.`,
+      desc ? `Character description: ${desc}.` : '',
+      `Pressure level: ${pressure}/100. Higher pressure means more assertive, challenging, and frequent participation.`,
+      initialIntro ? `Opening behavior: ${initialIntro}` : '',
+      customPrompt ? `Additional behavior instructions: ${customPrompt}` : '',
+      'Stay true to this personality in every reply. Do not become a generic AI speaker.'
+    ].filter(Boolean).join('\n')
+  };
 };
 
 const getTopicCacheKey = () => {
@@ -135,52 +242,7 @@ const INDUSTRY_CONTEXTS = [
   "Creative Agency"
 ];
 
-const REAL_GD_FEATURES = [
-  {
-    title: "Turn-Based Live Dialogue",
-    description: "AI members wait, respond to the latest point, and avoid duplicate replies.",
-    status: "Active",
-    icon: Users
-  },
-  {
-    title: "Free-Tier Guard",
-    description: "Gemini calls are queued and spaced with a configurable RPM limit.",
-    status: "Protected",
-    icon: RefreshCw
-  },
-  {
-    title: "Live Quality Coach",
-    description: "Relevance, clarity, and next-move feedback update during the round.",
-    status: "Realtime",
-    icon: Sparkles
-  },
-  {
-    title: "Final Executive Report",
-    description: "Full-session transcript analysis runs once after the GD ends.",
-    status: "On finish",
-    icon: BarChart2
-  }
-];
-
-const INNOVATION_FEATURES = [
-  { title: 'Debate Heatmap', group: 'Analytics', status: 'Ready Next', icon: BarChart2, desc: 'Visualize dominance, silence, interruptions, and topic drift after every GD.', action: 'history', primary: 'View History', secondary: 'Open coaching reports to inspect participation and scores.', steps: ['Complete a GD round.', 'Open the latest report.', 'Compare speaking share, interruptions, and scores.'] },
-  { title: 'AI Resume-to-GD Mode', group: 'Preparation', status: 'Active', icon: FileText, desc: 'Generate custom GD topics from resume skills, projects, and target roles.', action: 'resume', primary: 'Upload Resume', secondary: 'Jump to Setup GD and use the resume upload strip.', steps: ['Open Setup GD.', 'Upload a PDF/TXT resume.', 'Select the generated topic and start.'] },
-  { title: 'Role-Based GD Rooms', group: 'Practice Modes', status: 'New', icon: Users, desc: 'Switch between placement GD, MBA admission, HR panel, corporate meeting, and startup pitch rooms.', action: 'role', primary: 'Use Role Room', secondary: 'Sets topic/context for a placement-style GD.', topic: 'Campus placements should test practical skills more than academic scores.', context: 'MBA Admissions', participants: 4, duration: 5, steps: ['Choose a room scenario.', 'Start with realistic pressure.', 'Review performance by role expectation.'] },
-  { title: 'Real-Time Argument Score', group: 'Live Coaching', status: 'Ready Next', icon: Radio, desc: 'Score clarity, relevance, evidence, confidence, and structure while the user speaks.', action: 'setup', primary: 'Start Scored Round', secondary: 'Use the live session and final report for scoring.', steps: ['Start a round.', 'Speak with PEEL structure.', 'Review score and rewrites at the end.'] },
-  { title: 'Filler Word Trainer', group: 'Live Coaching', status: 'Active', icon: Mic, desc: 'Track filler words and repeated weak replies with replacement speaking habits.', action: 'filler', primary: 'Train Fillers', secondary: 'Starts a focused round where filler count matters.', topic: 'Should public speaking be taught as a core professional skill?', context: 'General / Academic', participants: 3, duration: 2, steps: ['Speak slowly.', 'Replace fillers with pauses.', 'Check filler count after the round.'] },
-  { title: 'Opening Line Generator', group: 'Preparation', status: 'Active', icon: MessageSquare, desc: 'Create confident opening lines for any topic before the timer starts.', action: 'prep', primary: 'Build Opening', secondary: 'Open Prep Coach for starter statements.', steps: ['Pick an opening line.', 'Adapt it to your topic.', 'Use it within first 20 seconds.'] },
-  { title: 'Counter-Argument Coach', group: 'Live Coaching', status: 'Ready Next', icon: Brain, desc: 'Suggest polite disagreement lines and stronger challenge phrases.', action: 'counter', primary: 'Practice Counter', secondary: 'Sets a topic that encourages balanced disagreement.', topic: 'Remote work improves productivity more than office collaboration.', context: 'Corporate Strategy', participants: 4, duration: 5, steps: ['Listen to one AI point.', 'Disagree politely.', 'Use evidence before conclusion.'] },
-  { title: 'Summary Round', group: 'Practice Modes', status: 'High Impact', icon: CheckCircle2, desc: 'Ask the user to summarize the GD in 30 seconds for leadership scoring.', action: 'summary', primary: 'Practice Summary', secondary: 'Opens Prep Coach with summary targets.', steps: ['Track 2 strong points.', 'Name both sides briefly.', 'End with a clear conclusion.'] },
-  { title: 'Persona Difficulty Levels', group: 'Practice Modes', status: 'New', icon: Flame, desc: 'Easy, medium, and hard AI members with more pressure in hard mode.', action: 'difficulty', primary: 'Hard Mode Setup', secondary: 'Uses 4 AI participants for a more challenging room.', topic: 'AI regulation is necessary even if it slows innovation.', context: 'Corporate Strategy', participants: 4, duration: 5, steps: ['Use 4 AI members.', 'Expect stronger pushback.', 'Defend points with examples.'] },
-  { title: 'Confidence Replay', group: 'Analytics', status: 'Ready Next', icon: RefreshCw, desc: 'Replay transcript weak lines and rewrite them into stronger professional responses.', action: 'history', primary: 'Open Replay Source', secondary: 'Use past reports to review weak phrases.', steps: ['Open a completed report.', 'Check suggested phrase rewrites.', 'Repeat improved version aloud.'] },
-  { title: 'GD Battle Mode', group: 'Practice Modes', status: 'New', icon: Trophy, desc: 'Competitive timed challenge against AI members for leadership and clarity scores.', action: 'battle', primary: 'Start Battle Setup', secondary: 'Uses a short high-pressure timed round.', topic: 'Leaders are made through experience, not born with talent.', context: 'MBA Admissions', participants: 4, duration: 2, steps: ['Start fast.', 'Make two strong points.', 'Avoid interruptions and fillers.'] },
-  { title: 'Daily GD Challenge', group: 'Growth', status: 'New', icon: Calendar, desc: 'One topic per day with streaks, badges, and progress tracking.', action: 'daily', primary: 'Use Today Topic', secondary: 'Loads a daily challenge topic into Setup.', topic: 'Can India become a global AI talent hub in the next decade?', context: 'General / Academic', participants: 4, duration: 5, steps: ['Use today’s topic.', 'Complete one round.', 'Check history for progress.'] },
-  { title: 'Interview Follow-up Mode', group: 'Growth', status: 'Ready Next', icon: Sparkles, desc: 'AI asks HR-style follow-up questions based on GD performance.', action: 'interview', primary: 'Interview Setup', secondary: 'Starts a GD topic likely to produce HR follow-ups.', topic: 'Work ethic matters more than technical skill in early careers.', context: 'MBA Admissions', participants: 3, duration: 5, steps: ['Finish the GD.', 'Review weaknesses.', 'Prepare HR-style answers.'] },
-  { title: 'Voice Emotion Analysis', group: 'Analytics', status: 'Research', icon: Radio, desc: 'Detect hesitant, rushed, flat, or confident delivery patterns.', action: 'voice', primary: 'Voice Practice', secondary: 'Starts a short voice-focused round.', topic: 'Confidence can be built through repeated uncomfortable conversations.', context: 'General / Academic', participants: 2, duration: 2, steps: ['Use microphone.', 'Maintain steady pace.', 'Review pacing and fillers.'] },
-  { title: 'Personal Improvement Plan', group: 'Growth', status: 'High Impact', icon: ShieldCheck, desc: 'Weekly plan from history: pacing, confidence, evidence usage, and filler control.', action: 'history', primary: 'Build From History', secondary: 'Use completed sessions to identify next focus.', steps: ['Complete 3 rounds.', 'Compare scores.', 'Choose one target for next week.'] }
-];
-
-export default function Dashboard({ onStartSession, onViewReport, activeSection = 'overview', onChangeSection }) {
+export default function Dashboard({ onStartSession, onViewReport, activeSection = 'setup', onChangeSection, currentUser, appSettings = {} }) {
   const [topic, setTopic] = useState(SUGGESTED_TOPICS[0]);
   const [industryContext, setIndustryContext] = useState(INDUSTRY_CONTEXTS[0]);
   const [duration, setDuration] = useState(2);
@@ -192,7 +254,14 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
   const [resumeTopics, setResumeTopics] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
-  const [activeInnovation, setActiveInnovation] = useState(INNOVATION_FEATURES[0].title);
+  const [forumPosts, setForumPosts] = useState([]);
+  const [forumCategory, setForumCategory] = useState('All');
+  const [forumDraft, setForumDraft] = useState({ title: '', body: '', category: 'GD Doubt', tags: '' });
+  const [forumError, setForumError] = useState('');
+  const [isForumSubmitting, setIsForumSubmitting] = useState(false);
+  const [isForumComposerOpen, setIsForumComposerOpen] = useState(false);
+  const [expandedForumPost, setExpandedForumPost] = useState(null);
+  const [forumReplyDrafts, setForumReplyDrafts] = useState({});
   const [prepChecklist, setPrepChecklist] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('gd_prep_checklist')) || {};
@@ -215,6 +284,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }
   });
   const [activePersonaIndex, setActivePersonaIndex] = useState(0);
+  const [selectedPersonaKeys, setSelectedPersonaKeys] = useState([]);
   const [trendingTopics, setTrendingTopics] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(getTopicCacheKey())) || SUGGESTED_TOPICS.slice(0, 6);
@@ -238,6 +308,26 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     fetchUserScopedData();
     loadInitialTrendingTopics();
   }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (appSettings.targetIndustry && INDUSTRY_CONTEXTS.includes(appSettings.targetIndustry)) {
+        setIndustryContext(appSettings.targetIndustry);
+      }
+
+      const minutes = Number(String(appSettings.preferredDuration || '').match(/\d+/)?.[0]);
+      if ([2, 5, 10].includes(minutes)) {
+        setDuration(minutes);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [appSettings.targetIndustry, appSettings.preferredDuration]);
+
+  useEffect(() => {
+    if (activeSection === 'innovation') {
+      fetchForumPosts();
+    }
+  }, [activeSection, forumCategory]);
 
   useEffect(() => {
     if (miniGdState !== 'running' || miniGdDuration === 'unlimited') return undefined;
@@ -471,6 +561,84 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }
   }
 
+  const fetchForumPosts = async () => {
+    try {
+      setForumError('');
+      const query = forumCategory && forumCategory !== 'All' ? `?category=${encodeURIComponent(forumCategory)}` : '';
+      const res = await fetch(`http://localhost:5000/api/forum/posts${query}`, {
+        headers: authHeaders()
+      });
+      if (!res.ok) throw new Error('Could not load community posts');
+      const posts = await res.json();
+      setForumPosts(posts);
+    } catch (error) {
+      console.warn('Forum sync unavailable:', error.message);
+      setForumError('Community forum is offline. Start the backend to sync public posts.');
+    }
+  };
+
+  const submitForumPost = async (event) => {
+    event.preventDefault();
+    const body = forumDraft.body.trim();
+    const title = forumDraft.title.trim() || body.split(/\s+/).slice(0, 10).join(' ');
+    if (!body) return;
+
+    try {
+      setIsForumSubmitting(true);
+      setForumError('');
+      const res = await fetch('http://localhost:5000/api/forum/posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ ...forumDraft, title, body })
+      });
+      if (!res.ok) throw new Error('Could not create post');
+      const saved = await res.json();
+      setForumPosts(prev => [saved, ...prev]);
+      setForumDraft({ title: '', body: '', category: 'GD Doubt', tags: '' });
+      setIsForumComposerOpen(false);
+    } catch (error) {
+      console.warn('Forum post failed:', error.message);
+      setForumError('Could not post your question. Please check the backend connection.');
+    } finally {
+      setIsForumSubmitting(false);
+    }
+  };
+
+  const voteForumPost = async (postId, reaction = 'like') => {
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/posts/${postId}/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ reaction })
+      });
+      if (!res.ok) throw new Error('Vote failed');
+      const updated = await res.json();
+      setForumPosts(prev => prev.map(post => post._id === updated._id ? updated : post));
+    } catch (error) {
+      console.warn('Forum vote failed:', error.message);
+    }
+  };
+
+  const replyForumPost = async (postId) => {
+    const text = (forumReplyDrafts[postId] || '').trim();
+    if (!text) return;
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/posts/${postId}/replies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ text })
+      });
+      if (!res.ok) throw new Error('Comment failed');
+      const updated = await res.json();
+      setForumPosts(prev => prev.map(post => post._id === updated._id ? updated : post));
+      setForumReplyDrafts(prev => ({ ...prev, [postId]: '' }));
+      setExpandedForumPost(postId);
+    } catch (error) {
+      console.warn('Forum comment failed:', error.message);
+    }
+  };
+
   const handleResumeUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -508,16 +676,51 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }
   };
 
+  const validSelectedPersonaKeys = selectedPersonaKeys.filter(key => (
+    aiPersonas.some((persona, index) => getPersonaKey(persona, index) === key)
+  ));
+  const effectiveSelectedPersonaKeys = validSelectedPersonaKeys.length
+    ? validSelectedPersonaKeys
+    : aiPersonas.slice(0, numParticipants).map(getPersonaKey);
+  const selectedSetupPersonas = effectiveSelectedPersonaKeys
+    .map(key => aiPersonas.find((persona, index) => getPersonaKey(persona, index) === key))
+    .filter(Boolean);
+  const selectedSessionPersonas = (selectedSetupPersonas.length ? selectedSetupPersonas : aiPersonas.slice(0, numParticipants))
+    .map(buildSessionPersona);
+
+  const selectParticipantCount = (count) => {
+    const nextCount = Math.min(count, aiPersonas.length || count);
+    setNumParticipants(nextCount);
+    setSelectedPersonaKeys(aiPersonas.slice(0, nextCount).map(getPersonaKey));
+  };
+
+  const toggleSetupPersona = (persona, index) => {
+    const key = getPersonaKey(persona, index);
+    const currentKeys = effectiveSelectedPersonaKeys;
+    const isSelected = currentKeys.includes(key);
+    const next = isSelected ? currentKeys.filter(item => item !== key) : [...currentKeys, key];
+    const capped = next.slice(0, 4);
+    setSelectedPersonaKeys(capped);
+    setNumParticipants(Math.max(1, capped.length));
+  };
+
   const handleStart = async (e) => {
     e.preventDefault();
     if (!topic.trim()) return;
+    if (selectedSessionPersonas.length === 0) return;
 
     try {
       setIsSubmitting(true);
       const res = await fetch('http://localhost:5000/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ topic, durationLimit: duration, industryContext, numParticipants })
+        body: JSON.stringify({
+          topic,
+          durationLimit: duration,
+          industryContext,
+          numParticipants: selectedSessionPersonas.length,
+          aiPersonas: selectedSessionPersonas
+        })
       });
 
       if (!res.ok) throw new Error('Failed to initialize session');
@@ -530,7 +733,8 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
         topic,
         industryContext,
         durationLimit: duration,
-        numParticipants,
+        numParticipants: selectedSessionPersonas.length,
+        aiPersonas: selectedSessionPersonas,
         createdAt: new Date(),
         transcript: [],
         userMetrics: { speakingTime: 0, speakPercentage: 0, interruptionCount: 0, interruptedCount: 0, pacingWpm: 0, fillerWordCount: 0 },
@@ -544,35 +748,10 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     }
   };
 
-  const applyInnovationFeature = (feature) => {
-    if (feature.topic) setTopic(feature.topic);
-    if (feature.context) setIndustryContext(feature.context);
-    if (feature.participants) setNumParticipants(feature.participants);
-    if (feature.duration) setDuration(feature.duration);
-
-    if (feature.action === 'prep' || feature.action === 'summary') {
-      onChangeSection?.('prep');
-      return;
-    }
-
-    if (feature.action === 'history') {
-      onChangeSection?.('history');
-      return;
-    }
-
-    if (feature.action === 'resume') {
-      onChangeSection?.('setup');
-      setTimeout(() => fileInputRef.current?.click(), 100);
-      return;
-    }
-
-    onChangeSection?.('setup');
-  };
-
   const miniGdMember = aiPersonas[miniGdMemberIndex] || aiPersonas[0] || PERSONA_TEMPLATES[0];
-  const visibleMiniGdTurns = miniGdTurns.filter(turn => turn.speaker !== 'Coach');
+  const visibleMiniGdTurns = miniGdTurns.filter(turn => turn.speaker !== 'CoachNote');
   const miniGdUserTurns = miniGdTurns.filter(turn => turn.speaker === 'You');
-  const latestMiniCoachTurn = [...miniGdTurns].reverse().find(turn => turn.speaker === 'Coach');
+  const latestMiniCoachTurn = [...miniGdTurns].reverse().find(turn => turn.speaker === 'CoachNote');
   const latestMiniScore = Number(latestMiniCoachTurn?.text?.match(/score:\s*(\d+)/i)?.[1]);
   const miniGdWordCount = miniGdUserTurns.reduce((total, turn) => total + turn.text.split(/\s+/).filter(Boolean).length, 0);
   const miniGdExampleCount = miniGdUserTurns.filter(turn => /example|for instance|such as|case|data|study|because|since|survey|report|company|real/i.test(turn.text)).length;
@@ -602,11 +781,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     setMiniGdTurns([
       {
         speaker: 'Coach',
-        text: `Mini GD started. Topic: ${topic}. You are speaking with ${miniGdMember.name}, ${miniGdMember.role}. Give one clear point with reason and example.`
-      },
-      {
-        speaker: miniGdMember.name,
-        text: miniGdMember.initialIntro || `I want to hear your first clear view on ${topic}.`
+        text: `Mini GD started. Topic: ${topic}. I will act as your teacher and guide your answer step by step. Start with one clear point, one reason, and one example.`
       }
     ]);
     setMiniGdState('running');
@@ -625,12 +800,14 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     if (!text || miniGdThinking) return;
 
     const roundId = miniGdRoundIdRef.current;
+    const turnCount = miniGdTurns.length;
     setMiniGdInput('');
     setMiniGdThinking(true);
     const nextTurns = [...miniGdTurns, { speaker: 'You', text }];
     setMiniGdTurns(nextTurns);
 
     try {
+      const startedAt = Date.now();
       const res = await fetch('http://localhost:5000/api/sessions/mini-gd-turn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -646,27 +823,26 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       if (!res.ok) throw new Error('Mini GD LLM request failed');
       const data = await res.json();
       if (roundId !== miniGdRoundIdRef.current) return;
+      const remainingDelay = Math.max(0, 900 - (Date.now() - startedAt));
+      if (remainingDelay) {
+        await new Promise(resolve => setTimeout(resolve, remainingDelay));
+      }
+      if (roundId !== miniGdRoundIdRef.current) return;
       setMiniGdTurns(prev => [
         ...prev,
-        { speaker: miniGdMember.name, text: data.memberReply },
-        { speaker: 'Coach', text: `${data.coachFeedback} Quick score: ${data.score}/100. ${data.nextPrompt}` }
+        { speaker: 'Coach', text: stripMiniGdSpeakerPrefix(data.memberReply) },
+        { speaker: 'CoachNote', text: `${data.coachFeedback} Quick score: ${data.score}/100. ${data.nextPrompt}` }
       ]);
     } catch (error) {
       console.warn('Mini GD fallback used:', error.message);
       if (roundId !== miniGdRoundIdRef.current) return;
-      const words = text.split(/\s+/).filter(Boolean);
-      const hasExample = /example|for instance|such as|case|data|study|because|since/i.test(text);
-      const score = Math.min(100, Math.round(Math.min(words.length, 45) * 1.3 + (hasExample ? 20 : 0)));
+      const fallback = buildMiniGdLocalTurn({ topic, text, member: miniGdMember, turnCount });
+      await new Promise(resolve => setTimeout(resolve, 700));
+      if (roundId !== miniGdRoundIdRef.current) return;
       setMiniGdTurns(prev => [
         ...prev,
-        {
-          speaker: miniGdMember.name,
-          text: `${miniGdMember.name}: Connect that more directly to ${topic}. What practical example proves your point?`
-        },
-        {
-          speaker: 'Coach',
-          text: `${hasExample ? 'Good support. Add a sharper conclusion.' : 'Add one example or data point.'} Quick score: ${score}/100.`
-        }
+        { speaker: 'Coach', text: stripMiniGdSpeakerPrefix(fallback.memberReply) },
+        { speaker: 'CoachNote', text: `${fallback.coachFeedback} Quick score: ${fallback.score}/100. ${fallback.nextPrompt}` }
       ]);
     } finally {
       if (roundId === miniGdRoundIdRef.current) {
@@ -729,7 +905,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
           <p>Shape the topic, choose the room pressure, and launch a timed AI panel discussion.</p>
         </div>
         <div className="setup-hero-stat">
-          <span>{numParticipants}</span>
+          <span>{selectedSessionPersonas.length || numParticipants}</span>
           <small>AI voices</small>
         </div>
       </div>
@@ -746,12 +922,12 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
           </div>
           <div className="setup-step">
             <span>03</span>
-            <div><strong>Room</strong><small>{numParticipants} members · {duration} min</small></div>
+            <div><strong>Room</strong><small>{selectedSessionPersonas.length || numParticipants} members · {duration} min</small></div>
           </div>
 
           <div className="setup-rail-note">
             <Sparkles size={18} />
-            <p>Resume topics and live coaching use guarded Gemini calls to stay within free-tier limits.</p>
+            <p>{appSettings.requestMode || 'Free-tier balanced'} keeps Gemini calls controlled while the round stays interactive.</p>
           </div>
         </aside>
 
@@ -823,7 +999,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
           <div className="setup-panel-header">
             <div>
               <h2>Round Settings</h2>
-              <p>Tune the challenge level before launch.</p>
+            <p>{appSettings.coachingIntensity || 'Balanced'} coaching with {appSettings.voiceMode || 'balanced AI voices'}.</p>
             </div>
           </div>
 
@@ -838,11 +1014,44 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
             <label>AI Participants</label>
             <div className="setup-segmented">
               {[2, 3, 4].map((num) => (
-                <button key={num} type="button" onClick={() => setNumParticipants(num)} className={numParticipants === num ? 'is-active' : ''}>
+                <button key={num} type="button" onClick={() => selectParticipantCount(num)} className={numParticipants === num ? 'is-active' : ''}>
                   <Users size={16} /> {num}
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="setup-field">
+            <div className="setup-refresh-label">
+              <label>Select AI Panel</label>
+              <button type="button" onClick={() => onChangeSection?.('members')}>
+                <Settings size={13} />
+                Edit members
+              </button>
+            </div>
+            <div className="setup-persona-picker">
+              {aiPersonas.map((persona, index) => {
+                const key = getPersonaKey(persona, index);
+                const isSelected = effectiveSelectedPersonaKeys.includes(key);
+
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`setup-persona-choice ${isSelected ? 'is-selected' : ''}`}
+                    style={{ '--persona-color': persona.color || '#0f766e' }}
+                    onClick={() => toggleSetupPersona(persona, index)}
+                  >
+                    <span>{persona.name?.charAt(0) || 'A'}</span>
+                    <strong>{persona.name || `AI ${index + 1}`}</strong>
+                    <small>{persona.role || 'AI Participant'}</small>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="setup-persona-note">
+              Selected members use their edited speech style, pressure, description, opening line, and behavior prompt in the live round.
+            </p>
           </div>
 
           <div className="setup-field">
@@ -861,7 +1070,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
             <h3>{topic}</h3>
             <div>
               <small>{industryContext}</small>
-              <small>{numParticipants} AI · {duration} min</small>
+              <small>{selectedSessionPersonas.length} AI · {duration} min</small>
             </div>
           </div>
 
@@ -1013,7 +1222,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       ) : history.length === 0 ? (
         <div className="flat-card" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
           <Calendar size={40} style={{ margin: '0 auto 10px', opacity: 0.35 }} />
-          <p>No group discussions found. Complete your first practice round from Setup GD.</p>
+        <p>No group discussions found. Complete your first practice round from Start a GD.</p>
         </div>
       ) : (
         <>
@@ -1120,99 +1329,6 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     </>
   );
 
-  const renderOverview = () => (
-    <>
-      <div className="dashboard-hero">
-        <h1>Group Discussion Intelligence Platform</h1>
-        <p>
-          Practice competitive group discussions against diverse AI personas, then review speech analytics,
-          interruption patterns, and executive communication coaching.
-        </p>
-      </div>
-
-      <div className="feature-grid">
-        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('setup')}>
-          <Settings color="var(--primary)" />
-          <h3>Setup GD</h3>
-          <p>Create a topic, choose context, set duration, and start the round.</p>
-        </button>
-        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('members')}>
-          <Users color="var(--secondary)" />
-          <h3>AI Members</h3>
-          <p>See the different discussion personalities before you enter.</p>
-        </button>
-        <button className="flat-card feature-card-button" type="button" onClick={() => onChangeSection?.('history')}>
-          <BarChart2 color="var(--accent-green)" />
-          <h3>History</h3>
-          <p>Open past sessions and review coaching reports.</p>
-        </button>
-        <div className="flat-card feature-card-button" style={{ cursor: 'default' }}>
-          <Home color="var(--accent-yellow)" />
-          <h3>{history.length || 0} Sessions</h3>
-          <p>{latestScore ? `${latestScore}% average coaching score` : 'No completed scores yet'}</p>
-        </div>
-      </div>
-
-      <div className="professional-band">
-        <div className="flat-card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <Sparkles color="var(--primary)" />
-            <div>
-              <h2 style={{ fontSize: '1.2rem' }}>Real GD Toolkit</h2>
-              <p style={{ fontSize: '0.9rem' }}>Built to feel live while keeping API calls controlled.</p>
-            </div>
-          </div>
-
-          <div className="toolkit-list">
-            {REAL_GD_FEATURES.map((feature) => {
-              const Icon = feature.icon;
-              return (
-                <div key={feature.title} className="toolkit-row">
-                  <div className="toolkit-icon"><Icon size={18} /></div>
-                  <div>
-                    <h3 style={{ fontSize: '0.95rem', marginBottom: '2px' }}>{feature.title}</h3>
-                    <p style={{ fontSize: '0.82rem', lineHeight: 1.4 }}>{feature.description}</p>
-                  </div>
-                  <span className="badge badge-success" style={{ whiteSpace: 'nowrap' }}>{feature.status}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="flat-card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <TrendingUp color="var(--accent-blue)" />
-            <div>
-              <h2 style={{ fontSize: '1.2rem' }}>Your Performance Snapshot</h2>
-              <p style={{ fontSize: '0.9rem' }}>
-                {completedRuns.length ? 'Calculated from completed GD reports.' : 'Complete a round to generate personal analytics.'}
-              </p>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gap: '14px' }}>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', fontWeight: 700, marginBottom: '8px' }}>
-                <span>Average coaching score</span>
-                <span>{latestScore ? `${latestScore}%` : 'No data'}</span>
-              </div>
-              <div className="quota-meter" style={{ '--meter-width': `${latestScore || 8}%` }}><span /></div>
-            </div>
-            <p style={{ fontSize: '0.88rem', lineHeight: 1.5 }}>
-              {completedRuns.length
-                ? `Strongest area: ${strongestDimension?.label} (${strongestDimension?.value}%). Next focus: ${weakestDimension?.label} (${weakestDimension?.value}%).`
-                : 'Your first completed GD will unlock personalized strengths, weak areas, and next-round targets.'}
-            </p>
-            <button className="btn-primary" type="button" onClick={() => onChangeSection?.(completedRuns.length ? 'prep' : 'setup')} style={{ width: '100%' }}>
-              <Play size={16} fill="white" /> {completedRuns.length ? 'Open Personal Prep' : 'Start First Round'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-
   const renderPrepCoach = () => (
     <>
       <SectionHeader
@@ -1258,8 +1374,8 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
               ))}
               {miniGdThinking && (
                 <div className="mini-gd-message">
-                  <strong>{miniGdMember.name}</strong>
-                  <p>Thinking about your point...</p>
+                  <strong>Coach</strong>
+                  <p>Reviewing your point...</p>
                 </div>
               )}
               <div ref={miniGdEndRef} />
@@ -1270,7 +1386,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
                 value={miniGdInput}
                 onChange={(e) => setMiniGdInput(e.target.value)}
                 disabled={miniGdState !== 'running' || miniGdThinking}
-                placeholder={miniGdState === 'running' ? `Reply to ${miniGdMember.name}...` : 'Start Mini GD to unlock response box'}
+                placeholder={miniGdState === 'running' ? 'Type your GD answer for the coach...' : 'Start Mini GD to unlock response box'}
               />
               <button type="submit" className="btn-secondary" disabled={miniGdState !== 'running' || miniGdThinking || !miniGdInput.trim()}>
                 {miniGdThinking ? 'Thinking' : 'Send'}
@@ -1280,7 +1396,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
 
           <div className="mini-gd-side">
             <div className="mini-gd-coach-card">
-              <strong>Practice Member</strong>
+              <strong>Coaching Style</strong>
               <select
                 value={miniGdMemberIndex}
                 onChange={(e) => setMiniGdMemberIndex(Number(e.target.value))}
@@ -1288,7 +1404,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
               >
                 {aiPersonas.map((persona, index) => (
                   <option key={`${persona.name}-${index}`} value={index}>
-                    {persona.name} - {persona.role}
+                    {persona.role}
                   </option>
                 ))}
               </select>
@@ -1349,78 +1465,240 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     </>
   );
 
-  const renderInnovationLab = () => (
-    (() => {
-      const selectedFeature = INNOVATION_FEATURES.find(feature => feature.title === activeInnovation) || INNOVATION_FEATURES[0];
-      const SelectedIcon = selectedFeature.icon;
+  const renderInnovationLab = () => {
+    let forumUser;
+    try {
+      forumUser = currentUser || JSON.parse(localStorage.getItem('gd_user') || '{}');
+    } catch {
+      forumUser = {};
+    }
+    const forumUserName = forumUser.name || 'GD Learner';
+    const forumUserPhoto = forumUser.profilePhoto || '';
+    const userPostCount = forumPosts.filter(post => post.authorName === forumUserName).length;
 
-      return (
+    return (
     <>
       <SectionHeader
-        icon={Lightbulb}
-        title="Innovation Lab"
-        description="A complete feature board for the GD platform: live coaching, analytics, practice modes, and long-term growth tools."
-        action={<button className="btn-primary" type="button" onClick={() => onChangeSection?.('prep')}><Target size={16} /> Prep Coach</button>}
+        icon={MessageCircle}
+        title="Community Forum"
+        description="Ask public GD doubts, request topics, share feature suggestions, and learn from other users."
+        action={<button className="btn-primary" type="button" onClick={fetchForumPosts}><RefreshCw size={16} /> Refresh</button>}
       />
 
-      <div className="innovation-hero flat-card">
-        <div>
-          <span><Sparkles size={16} /> Product Roadmap</span>
-          <h2>All advanced GD features in one place</h2>
-          <p>Use this lab as the feature center. Active modules are already connected; ready-next modules are staged for the next implementation pass.</p>
-        </div>
-        <strong>{INNOVATION_FEATURES.length}</strong>
-      </div>
-
-      <div className="innovation-action-board flat-card">
-        <div className="innovation-action-main">
-          <div className="innovation-icon"><SelectedIcon size={22} /></div>
-          <div>
-            <span>{selectedFeature.group}</span>
-            <h2>{selectedFeature.title}</h2>
-            <p>{selectedFeature.secondary}</p>
-          </div>
-        </div>
-        <div className="innovation-action-steps">
-          {selectedFeature.steps.map((step, idx) => (
-            <div key={step}>
-              <strong>{idx + 1}</strong>
-              <span>{step}</span>
+      <div className="community-layout community-template-layout">
+        <aside className="community-left-rail">
+          <div className="community-profile-card">
+            <div className="community-profile-cover" />
+            <div className="community-profile-avatar">
+              {forumUserPhoto ? <img src={forumUserPhoto} alt={forumUserName} /> : forumUserName.charAt(0).toUpperCase()}
             </div>
-          ))}
-        </div>
-        <button type="button" className="btn-primary" onClick={() => applyInnovationFeature(selectedFeature)}>
-          <Play size={16} fill="white" />
-          {selectedFeature.primary}
-        </button>
+            <h2>{forumUserName}</h2>
+            <p>{forumUser.role || 'Community Member'}</p>
+            <div className="community-profile-stat">
+              <span>Posts</span>
+              <strong>{userPostCount}</strong>
+            </div>
+            <div className="community-profile-stat">
+              <span>Sessions</span>
+              <strong>{history.length || 0}</strong>
+            </div>
+            <button type="button" onClick={() => onChangeSection?.('history')}>View Progress</button>
+          </div>
+
+          <div className="community-side-card">
+            <div className="community-side-head">
+              <strong>Suggestions</strong>
+              <span>+</span>
+            </div>
+            {[
+              ['Ask for counter lines', 'I need stronger counter points for a GD topic. Please suggest practical lines and examples.'],
+              ['Request trending topics', 'Please suggest current GD topics that are useful for placement practice.'],
+              ['Share a GD tip', 'Here is one practice tip that helped me improve in group discussion rounds:']
+            ].map(([item, body]) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => {
+                  setForumDraft(prev => ({ ...prev, title: item, body }));
+                  setIsForumComposerOpen(true);
+                }}
+              >
+                <span>{item.charAt(0)}</span>
+                <small>{item}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <main className="community-center-column">
+          <div className="flat-card community-thread-toolbar">
+            <div>
+              <span>Forum Discussions</span>
+              <strong>Posts and comments</strong>
+            </div>
+            <button type="button" className="btn-primary" onClick={() => setIsForumComposerOpen(true)}>
+              <Send size={16} />
+              New Post
+            </button>
+          </div>
+
+          <section className="flat-card community-feed">
+            <div className="community-filter-row">
+              {['All', 'GD Doubt', 'Topic Request', 'Feature Suggestion', 'Practice Tip'].map(category => (
+                <button
+                  key={category}
+                  type="button"
+                  className={forumCategory === category ? 'is-active' : ''}
+                  onClick={() => setForumCategory(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+
+            <div className="community-post-list">
+              {forumPosts.length === 0 ? (
+                <div className="community-empty">
+                  <MessageCircle size={34} />
+                  <strong>No community posts yet</strong>
+                  <span>Start with the first GD doubt or feature suggestion.</span>
+                </div>
+              ) : forumPosts.map(post => (
+                <article key={post._id} className="community-post-card">
+                  <div>
+                    <div className="community-post-meta">
+                      <span className="community-author-avatar">
+                        {post.authorPhoto ? <img src={post.authorPhoto} alt={post.authorName || 'Author'} /> : (post.authorName || 'C').charAt(0).toUpperCase()}
+                      </span>
+                      <span>{post.category}</span>
+                      <small>{post.authorName || 'Community Member'} - {new Date(post.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</small>
+                    </div>
+                    <h3>{post.title}</h3>
+                    <p>{post.body}</p>
+                    {post.tags?.length > 0 && (
+                      <div className="community-tags">
+                        {post.tags.map(tag => <em key={tag}>{tag}</em>)}
+                      </div>
+                    )}
+                    <div className="community-post-actions">
+                      <button
+                        type="button"
+                        className={post.isLiked ? 'is-active' : ''}
+                        onClick={() => voteForumPost(post._id, 'like')}
+                      >
+                        <ThumbsUp size={16} />
+                        Helpful ({post.votes || 0})
+                      </button>
+                      <button
+                        type="button"
+                        className={post.isDisliked ? 'is-active dislike' : ''}
+                        onClick={() => voteForumPost(post._id, 'dislike')}
+                      >
+                        <ThumbsDown size={16} />
+                        Dislike ({post.dislikes || 0})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedForumPost(expandedForumPost === post._id ? null : post._id)}
+                      >
+                        <MessageSquare size={16} />
+                        Comments ({post.replies?.length || 0})
+                      </button>
+                    </div>
+
+                    {expandedForumPost === post._id && (
+                      <div className="community-comments">
+                        <div className="community-comment-list">
+                          {post.replies?.length > 0 ? post.replies.map(reply => (
+                            <div key={reply._id || reply.createdAt} className="community-comment">
+                              <div className="community-comment-avatar">
+                                {reply.authorPhoto ? <img src={reply.authorPhoto} alt={reply.authorName || 'Comment author'} /> : (reply.authorName || 'C').charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <strong>{reply.authorName || 'Community Member'}</strong>
+                                <small>{new Date(reply.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</small>
+                                <p>{reply.text}</p>
+                              </div>
+                            </div>
+                          )) : (
+                            <div className="community-comment-empty">No comments yet. Add the first helpful reply.</div>
+                          )}
+                        </div>
+                        <div className="community-comment-box">
+                          <input
+                            value={forumReplyDrafts[post._id] || ''}
+                            onChange={(e) => setForumReplyDrafts(prev => ({ ...prev, [post._id]: e.target.value }))}
+                            placeholder="Write a comment or suggestion..."
+                          />
+                          <button
+                            type="button"
+                            onClick={() => replyForumPost(post._id)}
+                            disabled={!(forumReplyDrafts[post._id] || '').trim()}
+                          >
+                            Reply
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </main>
+
       </div>
 
-      <div className="innovation-grid">
-        {INNOVATION_FEATURES.map((feature) => {
-          const Icon = feature.icon;
-          const isSelected = feature.title === selectedFeature.title;
-          return (
-            <button
-              key={feature.title}
-              type="button"
-              className={`flat-card innovation-card ${isSelected ? 'is-selected' : ''}`}
-              onClick={() => setActiveInnovation(feature.title)}
-            >
-              <div className="innovation-card-top">
-                <div className="innovation-icon"><Icon size={20} /></div>
-                <span className={`innovation-status ${feature.status.replace(/\s+/g, '-').toLowerCase()}`}>{feature.status}</span>
+      {isForumComposerOpen && (
+        <div className="community-modal-backdrop" role="presentation" onMouseDown={() => setIsForumComposerOpen(false)}>
+          <form className="community-post-modal" onSubmit={submitForumPost} onMouseDown={(e) => e.stopPropagation()}>
+            <div className="community-post-modal-head">
+              <div>
+                <span>New Discussion</span>
+                <h2>Post to Community Forum</h2>
+                <p>Write one clear doubt, suggestion, or topic request. It will appear as a wide discussion card.</p>
               </div>
-              <h3>{feature.title}</h3>
-              <p>{feature.desc}</p>
-              <small>{feature.group}</small>
-            </button>
-          );
-        })}
-      </div>
+              <button type="button" onClick={() => setIsForumComposerOpen(false)} aria-label="Close post modal">Close</button>
+            </div>
+            <input
+              value={forumDraft.title}
+              onChange={(e) => setForumDraft(prev => ({ ...prev, title: e.target.value }))}
+              placeholder="Optional title. Example: How do I handle an aggressive participant?"
+              maxLength={140}
+            />
+            <textarea
+              value={forumDraft.body}
+              onChange={(e) => setForumDraft(prev => ({ ...prev, body: e.target.value }))}
+              placeholder="Write your full post here. Add context, what happened, and what kind of suggestion you need..."
+              maxLength={2000}
+            />
+            <div className="community-compose-row">
+              <select value={forumDraft.category} onChange={(e) => setForumDraft(prev => ({ ...prev, category: e.target.value }))}>
+                <option>GD Doubt</option>
+                <option>Topic Request</option>
+                <option>Feature Suggestion</option>
+                <option>Practice Tip</option>
+              </select>
+              <input
+                value={forumDraft.tags}
+                onChange={(e) => setForumDraft(prev => ({ ...prev, tags: e.target.value }))}
+                placeholder="tags: placement, AI, confidence"
+              />
+            </div>
+            {forumError && <div className="community-error">{forumError}</div>}
+            <div className="community-post-modal-actions">
+              <button type="button" className="btn-secondary" onClick={() => setIsForumComposerOpen(false)}>Cancel</button>
+              <button type="submit" className="btn-primary" disabled={isForumSubmitting || !forumDraft.body.trim()}>
+                <Send size={16} />
+                {isForumSubmitting ? 'Posting...' : 'Post Discussion'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </>
-      );
-    })()
-  );
+    );
+  };
 
   return (
     <div className="dashboard-shell">
@@ -1444,7 +1722,6 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
         </div>
       )}
 
-      {activeSection === 'overview' && renderOverview()}
       {activeSection === 'setup' && renderSetup()}
       {activeSection === 'prep' && renderPrepCoach()}
       {activeSection === 'innovation' && renderInnovationLab()}

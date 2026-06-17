@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import AuthLayout from './AuthLayout';
 
 export default function Signup({ onSignup, onNavigateToLogin }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -63,6 +65,8 @@ export default function Signup({ onSignup, onNavigateToLogin }) {
             className="input-field" 
             value={name}
             onChange={(e) => setName(e.target.value)}
+            placeholder="Enter your full name"
+            autoComplete="name"
             required 
           />
         </div>
@@ -76,6 +80,8 @@ export default function Signup({ onSignup, onNavigateToLogin }) {
             className="input-field" 
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            placeholder="Enter your email address"
+            autoComplete="email"
             required 
           />
         </div>
@@ -84,14 +90,26 @@ export default function Signup({ onSignup, onNavigateToLogin }) {
           <label style={{ display: 'block', fontSize: '0.85rem', color: '#4b5563', marginBottom: '8px', fontWeight: 500 }}>
             Password
           </label>
-          <input 
-            type="password" 
-            className="input-field" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={6}
-            required 
-          />
+          <div className="password-input-wrap">
+            <input 
+              type={showPassword ? 'text' : 'password'} 
+              className="input-field" 
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Create a password"
+              autoComplete="new-password"
+              minLength={6}
+              required 
+            />
+            <button
+              type="button"
+              className="password-toggle"
+              onClick={() => setShowPassword(prev => !prev)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+            >
+              {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+            </button>
+          </div>
         </div>
 
         <button 

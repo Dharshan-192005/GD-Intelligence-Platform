@@ -1,10 +1,80 @@
 const crypto = require('crypto');
 const User = require('../models/User');
 const { checkInMemoryMode } = require('../config/db');
+const UserProfile = require('../models/UserProfile');
+const AiPersona = require('../models/AiPersona');
+const PrepState = require('../models/PrepState');
+const UserProgress = require('../models/UserProgress');
 
 const inMemoryUsers = [];
 const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || process.env.GEMINI_API_KEY || 'gd-platform-dev-secret';
+
+const DEFAULT_SETTINGS = {
+  targetIndustry: 'General / Academic',
+  preferredDuration: '2 minutes',
+  voiceMode: 'Balanced AI voices',
+  themePreference: 'Professional light',
+  coachingIntensity: 'Balanced',
+  requestMode: 'Free-tier balanced',
+  interfaceDensity: 'Comfortable',
+  animationMode: 'Smooth animations',
+  sidebarMode: 'Expanded sidebar',
+  focusMode: 'Balanced workspace',
+  chatScrollMode: 'Auto-scroll chat',
+  soundEffects: 'On'
+};
+
+const DEFAULT_PERSONAS = [
+  {
+    name: 'Aarav',
+    role: 'Aggressive Speaker',
+    style: 'Fast, direct, challenging',
+    color: '#f43f5e',
+    desc: 'Challenges weak logic immediately and pushes others to justify every claim.',
+    pressure: 90,
+    prompt: 'You are an aggressive GD participant. Speak fast, challenge weak points, interrupt occasionally, and demand practical proof.',
+    initialIntro: 'I want to challenge the basic assumption here before everyone agrees too quickly.',
+    isActive: true,
+    order: 0
+  },
+  {
+    name: 'Nisha',
+    role: 'Silent Observer',
+    style: 'Brief, thoughtful, selective',
+    color: '#64748b',
+    desc: 'Speaks rarely but gives sharp summary points when the discussion loses direction.',
+    pressure: 35,
+    prompt: 'You are a silent observer. Speak less often, but when you speak, summarize clearly and add one thoughtful insight.',
+    initialIntro: 'I have been listening, and I think one important angle is being missed.',
+    isActive: true,
+    order: 1
+  },
+  {
+    name: 'Rohan',
+    role: 'Dominant Leader',
+    style: 'Confident, directive, organized',
+    color: '#7c3aed',
+    desc: 'Takes control of flow, assigns direction, and tries to lead the room.',
+    pressure: 84,
+    prompt: 'You are a dominant leader. Guide the discussion, organize points, and confidently push the group toward a conclusion.',
+    initialIntro: 'Let me structure this discussion into causes, impact, and possible solutions.',
+    isActive: true,
+    order: 2
+  },
+  {
+    name: 'Meera',
+    role: 'Logical Thinker',
+    style: 'Data-backed, structured, calm',
+    color: '#06b6d4',
+    desc: 'Asks for evidence, compares pros and cons, and prefers clear reasoning.',
+    pressure: 76,
+    prompt: 'You are a logical thinker. Use evidence, ask for data, compare tradeoffs, and keep the discussion structured.',
+    initialIntro: 'From a logical perspective, we should separate opinion from measurable impact.',
+    isActive: true,
+    order: 3
+  }
+];
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
@@ -44,6 +114,42 @@ const createToken = (user) => {
     exp: Date.now() + TOKEN_TTL_MS
   }));
   return `${payload}.${signPayload(payload)}`;
+};
+
+const initializeAccountData = async (user) => {
+  const userId = user._id;
+  await Promise.all([
+    UserProfile.findOneAndUpdate(
+      { userId },
+      {
+        $setOnInsert: {
+          userId,
+          role: 'Student',
+          goal: 'Placement GD preparation',
+          experienceLevel: 'Beginner',
+          targetIndustry: 'General / Academic',
+          profilePhoto: '',
+          settings: DEFAULT_SETTINGS
+        }
+      },
+      { upsert: true, new: true }
+    ),
+    PrepState.findOneAndUpdate(
+      { userId },
+      { $setOnInsert: { userId, checklist: {}, activeDrill: 'Opening' } },
+      { upsert: true, new: true }
+    ),
+    UserProgress.findOneAndUpdate(
+      { userId },
+      { $setOnInsert: { userId } },
+      { upsert: true, new: true }
+    )
+  ]);
+
+  const personaCount = await AiPersona.countDocuments({ userId });
+  if (personaCount === 0) {
+    await AiPersona.insertMany(DEFAULT_PERSONAS.map(persona => ({ ...persona, userId })));
+  }
 };
 
 const verifyToken = (token) => {
@@ -86,6 +192,12 @@ const signup = async (req, res) => {
     }
 
     if (checkInMemoryMode()) {
+      if (process.env.ALLOW_IN_MEMORY_AUTH !== 'true') {
+        return res.status(503).json({
+          error: 'MongoDB is not connected, so signup cannot be saved. Start MongoDB or fix MONGODB_URI, then restart the server.'
+        });
+      }
+
       if (inMemoryUsers.some(user => user.email === cleanEmail)) {
         return res.status(409).json({ error: 'An account with this email already exists.' });
       }
@@ -113,6 +225,7 @@ const signup = async (req, res) => {
       email: cleanEmail,
       ...credentials
     });
+    await initializeAccountData(user);
 
     return res.status(201).json({ user: publicUser(user), token: createToken(user) });
   } catch (error) {
@@ -128,6 +241,12 @@ const login = async (req, res) => {
 
     if (!cleanEmail || !password) {
       return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    if (checkInMemoryMode() && process.env.ALLOW_IN_MEMORY_AUTH !== 'true') {
+      return res.status(503).json({
+        error: 'MongoDB is not connected, so saved accounts cannot be loaded. Start MongoDB or fix MONGODB_URI, then restart the server.'
+      });
     }
 
     const user = checkInMemoryMode()

@@ -620,28 +620,128 @@ Return ONLY raw JSON:
   return fallback;
 };
 
+const analyzeMiniGdInput = (text = '') => {
+  const cleaned = String(text).trim();
+  const words = cleaned.toLowerCase().match(/[a-z0-9]+/g) || [];
+  const uniqueWords = new Set(words);
+  const repeatedCharacterRun = /(.)\1{7,}/i.test(cleaned.replace(/\s+/g, ''));
+  const longSingleToken = words.some(word => word.length > 24);
+  const alphabeticChars = cleaned.match(/[a-z]/gi) || [];
+  const uniqueLetters = new Set(alphabeticChars.map(char => char.toLowerCase()));
+  const lowLetterVariety = alphabeticChars.length > 18 && uniqueLetters.size <= 3;
+  const shortCasualReply = /^(hi|hello|hey|ok|okay|yes|no|hmm|mm|fine|good)[.!?\s]*$/i.test(cleaned);
+  const lowWordDiversity = words.length >= 5 && uniqueWords.size <= Math.max(2, Math.ceil(words.length * 0.35));
+  const isGibberish = !cleaned || shortCasualReply || repeatedCharacterRun || longSingleToken || lowLetterVariety || lowWordDiversity;
+
+  return {
+    cleaned,
+    words,
+    wordCount: words.length,
+    isGibberish,
+    reason: shortCasualReply
+      ? 'too short'
+      : repeatedCharacterRun || longSingleToken || lowLetterVariety || lowWordDiversity
+        ? 'not meaningful text'
+        : ''
+  };
+};
+
+const stripMiniGdSpeakerPrefix = (text = '') => (
+  String(text).replace(/^\s*(aarav|sam|meera|leo|kabir|coach|teacher)\s*:\s*/i, '').trim()
+);
+
+const buildMiniGdFallback = ({ topic, userText, memberRole, hasExample, hasLink, turnCount }) => {
+  const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
+  const inputQuality = analyzeMiniGdInput(userText);
+  const role = String(memberRole || '').toLowerCase();
+
+  if (inputQuality.isGibberish) {
+    const prompts = [
+      `I cannot treat "${inputQuality.cleaned.slice(0, 28) || 'that'}" as a GD argument yet. Give me one clear point on whether AI creates more jobs or removes them.`,
+      `That is not a meaningful contribution yet. Take a side on ${topicCore}, then add one reason.`,
+      `In a real GD, this answer would lose attention quickly. Say one practical impact of AI on employment in a complete sentence.`
+    ];
+
+    return {
+      memberReply: prompts[turnCount % prompts.length],
+      coachFeedback: `Your response is ${inputQuality.reason || 'not clear enough'}; write a complete GD point with a reason.`,
+      score: Math.min(8, Math.max(1, inputQuality.wordCount)),
+      nextPrompt: `Give one proper sentence on ${topicCore}.`
+    };
+  }
+
+  const aggressiveReplies = [
+    `Good start, but it is still too broad. If AI affects employment, name the exact group: freshers, skilled workers, or companies.`,
+    `Let me challenge that like a strict evaluator. Give one real workplace situation where AI helps or hurts jobs.`,
+    `Your point needs sharper evidence. What proof would make the group accept this view?`
+  ];
+  const logicalReplies = [
+    `Let us make this measurable. Are you talking about job loss, productivity, reskilling, or hiring quality?`,
+    `Separate short-term displacement from long-term opportunity. Which side does your example support?`,
+    `Good direction. Add one number, study, company example, or comparison to make it stronger.`
+  ];
+  const emotionalReplies = [
+    `I understand the concern, but bring in the human impact. How does this affect a student or employee preparing for work?`,
+    `That point can connect well if you show who feels the pressure most. What happens to people who cannot reskill quickly?`,
+    `Make it more relatable. Give one everyday example of someone helped or harmed by AI at work.`
+  ];
+  const neutralReplies = [
+    `Link your idea directly to ${topicCore}. Add one reason and then one example so the group can respond.`,
+    `That can work if you complete the structure: point, reason, example, and conclusion.`,
+    `Push it further. What would you say if another speaker challenged this point?`
+  ];
+  const pool = role.includes('aggressive') || role.includes('dominant') || role.includes('overconfident') || role.includes('interrupt')
+    ? aggressiveReplies
+    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
+      ? logicalReplies
+      : role.includes('emotional') || role.includes('nervous') || role.includes('hr')
+        ? emotionalReplies
+        : neutralReplies;
+  const score = Math.min(82, Math.round(Math.min(inputQuality.wordCount, 55) * 1.2 + (hasExample ? 24 : 0) + (hasLink ? 16 : 0)));
+
+  return {
+    memberReply: pool[turnCount % pool.length],
+    coachFeedback: hasExample
+      ? 'Good, you added support. Now make the conclusion sharper and topic-linked.'
+      : 'Your point is understandable, but it needs one concrete example or data point.',
+    score,
+    nextPrompt: hasExample ? `Can you conclude your stand on ${topicCore}?` : `Can you give one practical example related to ${topicCore}?`
+  };
+};
+
 const runMiniGdTurn = async ({ topic, transcript = [], userText, member = {}, industryContext = 'General / Academic' }) => {
-  const memberName = member.name || 'Meera';
   const memberRole = member.role || 'Logical Thinker';
-  const personaPrompt = member.prompt || `You are ${memberRole}. Respond naturally in a short GD practice.`;
+  const personaPrompt = member.prompt || `Use a ${memberRole} coaching style for short GD practice.`;
   const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
-  const wordCount = String(userText || '').split(/\s+/).filter(Boolean).length;
+  const inputQuality = analyzeMiniGdInput(userText);
+  const wordCount = inputQuality.wordCount;
   const hasExample = /example|for instance|such as|case|data|study|because|since|recently|in my experience/i.test(userText || '');
   const hasLink = /therefore|so|this shows|as a result|in conclusion|overall|this means/i.test(userText || '');
-  const fallbackScore = Math.min(100, Math.round(Math.min(wordCount, 45) * 1.25 + (hasExample ? 22 : 0) + (hasLink ? 18 : 0)));
+  const localFallback = buildMiniGdFallback({
+    topic,
+    userText,
+    memberRole,
+    hasExample,
+    hasLink,
+    turnCount: transcript.length
+  });
+
+  if (inputQuality.isGibberish) {
+    return localFallback;
+  }
 
   if (hasApiKey && genAI) {
     try {
       const model = buildModel({ temperature: 0.75, topP: 0.9, maxOutputTokens: 420 });
-      const prompt = `You are running a 60-second mini Group Discussion practice.
+      const prompt = `You are an interactive Group Discussion teacher and practice coach.
+You are NOT a GD participant. Do not roleplay as a panel member. Guide the user like a teacher.
 
 TOPIC: "${topic}"
 INDUSTRY CONTEXT: ${industryContext}
 
-AI MEMBER:
-Name: ${memberName}
-Role: ${memberRole}
-Persona: ${personaPrompt}
+COACHING STYLE:
+Style: ${memberRole}
+Style notes: ${personaPrompt}
 
 RECENT MINI GD:
 ${transcriptFormatted || '(No prior turns)'}
@@ -649,18 +749,26 @@ ${transcriptFormatted || '(No prior turns)'}
 USER JUST SAID:
 "${userText}"
 
+INPUT QUALITY:
+- Word count: ${wordCount}
+- Meaningful input: ${inputQuality.isGibberish ? 'no' : 'yes'}
+
 Return ONLY raw JSON:
 {
-  "memberReply": "<${memberName}'s natural 1-2 sentence reply that directly reacts to the user's point and adds one new topic-specific angle>",
+  "memberReply": "<teacher-style response: acknowledge, correct or guide, then ask the next improvement question in 1-2 sentences>",
   "coachFeedback": "<one concise coaching sentence about the user's answer quality>",
   "score": <0-100>,
-  "nextPrompt": "<one short follow-up question ${memberName} asks the user>"
+  "nextPrompt": "<one short follow-up question for the user>"
 }
 
 Rules:
 - Do not repeat old generic lines.
+- Do not start with a character name such as Aarav, Meera, Sam, or Coach.
 - The member reply must mention a specific issue from the topic.
+- Directly respond to the user's latest sentence, not only the topic.
+- If the latest user response is unclear, random letters, repeated characters, or not a complete GD point, call that out and score below 10.
 - Coach feedback must be honest. If the user says only "hi", "ok", or a very short phrase, score below 15.
+- Act like a teacher: guide, correct, improve, and ask the next step.
 - Keep everything short enough for quick mini practice.`;
 
       const result = await runGeminiRequest('mini-gd-turn', () => model.generateContent(prompt), {
@@ -669,9 +777,9 @@ Rules:
       const response = await result.response;
       const parsed = JSON.parse(stripJsonFences(response.text()));
       return {
-        memberReply: parsed.memberReply || `${memberName}: Let us connect that more clearly to ${topic}.`,
+        memberReply: stripMiniGdSpeakerPrefix(parsed.memberReply || `Let us connect that more clearly to ${topic}.`),
         coachFeedback: parsed.coachFeedback || 'Add a clearer reason and example.',
-        score: Math.max(0, Math.min(100, Number(parsed.score) || fallbackScore)),
+        score: Math.max(0, Math.min(100, Number(parsed.score) || localFallback.score)),
         nextPrompt: parsed.nextPrompt || 'Can you add one concrete example?'
       };
     } catch (err) {
@@ -679,15 +787,7 @@ Rules:
     }
   }
 
-  const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
-  return {
-    memberReply: `${memberName}: Your point needs to connect more directly to ${topicCore}. I would ask whether this works in real life and who is affected most.`,
-    coachFeedback: hasExample
-      ? 'Good, you added support. Now make the final link to the topic sharper.'
-      : 'Add one concrete example or data point so it sounds like a real GD answer.',
-    score: fallbackScore,
-    nextPrompt: `Can you give one practical example related to ${topicCore}?`
-  };
+  return localFallback;
 };
 
 module.exports = {

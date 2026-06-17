@@ -10,20 +10,33 @@ const AI_MEMBERS = [
   { name: 'Kabir', role: 'The Skeptic', color: '#f59e0b', initialIntro: 'Before we jump to conclusions, I want to challenge the core assumption we are basing this whole premise on.', prompt: 'You play devil\'s advocate, raise doubts, question assertions, and demand logical backing.' }
 ];
 
-const getConfiguredAIMembers = () => {
+const normalizeAIMember = (persona, index) => ({
+  name: persona.name || `AI ${index + 1}`,
+  role: persona.role || 'AI Participant',
+  color: persona.color || AI_MEMBERS[index % AI_MEMBERS.length].color,
+  initialIntro: persona.initialIntro || persona.desc || AI_MEMBERS[index % AI_MEMBERS.length].initialIntro,
+  prompt: persona.prompt || [
+    `You are ${persona.name || `AI ${index + 1}`}, a realistic Group Discussion participant.`,
+    `Role/personality: ${persona.role || 'AI Participant'}.`,
+    `Way of speech: ${persona.style || 'balanced and professional'}.`,
+    persona.desc ? `Character description: ${persona.desc}.` : '',
+    `Pressure level: ${persona.pressure || 60}/100.`,
+    'Stay true to this personality in every reply. Do not become a generic AI speaker.'
+  ].filter(Boolean).join('\n'),
+  style: persona.style,
+  pressure: persona.pressure,
+  desc: persona.desc
+});
+
+const getConfiguredAIMembers = (sessionPersonas = []) => {
+  if (Array.isArray(sessionPersonas) && sessionPersonas.length > 0) {
+    return sessionPersonas.map(normalizeAIMember);
+  }
+
   try {
     const savedPersonas = JSON.parse(localStorage.getItem('gd_ai_personas')) || [];
     if (!Array.isArray(savedPersonas) || savedPersonas.length === 0) return AI_MEMBERS;
-
-    return savedPersonas.map((persona, index) => ({
-      name: persona.name || `AI ${index + 1}`,
-      role: persona.role || 'AI Participant',
-      color: persona.color || AI_MEMBERS[index % AI_MEMBERS.length].color,
-      initialIntro: persona.initialIntro || persona.desc || AI_MEMBERS[index % AI_MEMBERS.length].initialIntro,
-      prompt: persona.prompt || `You are ${persona.role || 'a realistic group discussion participant'}. Speak in this style: ${persona.style || 'balanced and professional'}.`,
-      style: persona.style,
-      pressure: persona.pressure
-    }));
+    return savedPersonas.map(normalizeAIMember);
   } catch {
     return AI_MEMBERS;
   }
@@ -141,6 +154,21 @@ const buildLocalAIReply = (topic, aiMember, transcript) => {
   return `Building on ${lastSpeaker}'s point, ${topicCore} needs a balanced view. We should discuss ${angle} before reaching a conclusion.`;
 };
 
+const pickWeightedAIMember = (members) => {
+  const weighted = members.flatMap(member => {
+    const personaText = `${member.role || ''} ${member.style || ''} ${member.prompt || ''}`.toLowerCase();
+    const pressure = Number(member.pressure) || 55;
+    let weight = Math.max(1, Math.round(pressure / 25));
+
+    if (personaText.includes('dominant') || personaText.includes('aggressive') || personaText.includes('interrupt')) weight += 2;
+    if (personaText.includes('silent') || personaText.includes('observer') || personaText.includes('nervous')) weight = Math.max(1, weight - 2);
+
+    return Array.from({ length: weight }, () => member);
+  });
+
+  return weighted[Math.floor(Math.random() * weighted.length)] || members[0];
+};
+
 export default function GDArena({ session, onComplete }) {
   const currentSession = session || {
     _id: 'missing_session',
@@ -150,8 +178,8 @@ export default function GDArena({ session, onComplete }) {
     industryContext: 'General / Academic'
   };
   const activeAIMembers = useMemo(
-    () => getConfiguredAIMembers().slice(0, currentSession.numParticipants || 4),
-    [currentSession.numParticipants]
+    () => getConfiguredAIMembers(currentSession.aiPersonas).slice(0, currentSession.numParticipants || 4),
+    [currentSession.aiPersonas, currentSession.numParticipants]
   );
   const [timeLeft, setTimeLeft] = useState(Number(currentSession.durationLimit || 2) * 60);
   const [transcript, setTranscript] = useState([]);
@@ -551,12 +579,7 @@ export default function GDArena({ session, onComplete }) {
     let availableAIs = activeAIMembers.filter(ai => !lastAIs.includes(ai.name));
     if (availableAIs.length === 0) availableAIs = activeAIMembers;
     
-    // Select based on persona traits (e.g. Dominator has a higher probability to hijack)
-    let nextAI = availableAIs[Math.floor(Math.random() * availableAIs.length)];
-    const roll = Math.random();
-    if (roll < 0.35 && !lastAIs.includes('Sam') && activeAIMembers.some(a => a.name === 'Sam')) {
-      nextAI = activeAIMembers[0]; // Sam (Dominator) chimes in more frequently
-    }
+    const nextAI = pickWeightedAIMember(availableAIs);
 
     setAndSyncActiveSpeaker(`${nextAI.name} (Formulating...)`);
     

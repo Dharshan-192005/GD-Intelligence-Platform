@@ -23,23 +23,39 @@ const validateMongoId = (id, res) => {
   return true;
 };
 
+const cleanSessionPersona = (persona = {}, index = 0) => ({
+  name: String(persona.name || `AI ${index + 1}`).slice(0, 40),
+  role: String(persona.role || 'AI Participant').slice(0, 60),
+  color: /^#[0-9a-f]{6}$/i.test(persona.color || '') ? persona.color : '#0f766e',
+  style: String(persona.style || 'Balanced and professional').slice(0, 140),
+  pressure: Math.max(0, Math.min(100, Number(persona.pressure) || 60)),
+  desc: String(persona.desc || '').slice(0, 240),
+  initialIntro: String(persona.initialIntro || '').slice(0, 320),
+  prompt: String(persona.prompt || '').slice(0, 900)
+});
+
 /**
  * Create a new GD session
  */
 const createSession = async (req, res) => {
   try {
-    const { topic, durationLimit, industryContext, numParticipants } = req.body;
+    const { topic, durationLimit, industryContext, numParticipants, aiPersonas } = req.body;
     
     if (!topic || !durationLimit) {
       return res.status(400).json({ error: 'Topic and duration limit are required.' });
     }
+
+    const selectedPersonas = Array.isArray(aiPersonas)
+      ? aiPersonas.slice(0, 6).map(cleanSessionPersona)
+      : [];
 
     const sessionData = {
       userId: req.user?.id,
       topic,
       industryContext: industryContext || 'General/Academic',
       durationLimit,
-      numParticipants: numParticipants || 4,
+      numParticipants: selectedPersonas.length || numParticipants || 4,
+      aiPersonas: selectedPersonas,
       createdAt: new Date(),
       transcript: [],
       userMetrics: {

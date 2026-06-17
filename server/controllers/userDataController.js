@@ -20,7 +20,13 @@ const DEFAULT_SETTINGS = {
   voiceMode: 'Balanced AI voices',
   themePreference: 'Professional light',
   coachingIntensity: 'Balanced',
-  requestMode: 'Free-tier balanced'
+  requestMode: 'Free-tier balanced',
+  interfaceDensity: 'Comfortable',
+  animationMode: 'Smooth animations',
+  sidebarMode: 'Expanded sidebar',
+  focusMode: 'Balanced workspace',
+  chatScrollMode: 'Auto-scroll chat',
+  soundEffects: 'On'
 };
 
 const DEFAULT_PERSONAS = [
@@ -89,7 +95,18 @@ const cleanPersona = (persona, order = 0) => ({
 
 const getMemoryUserData = (userId) => {
   if (!memoryStore.profiles.has(userId)) {
-    memoryStore.profiles.set(userId, { role: 'Student', goal: 'Placement GD preparation', experienceLevel: 'Intermediate', notes: '', settings: DEFAULT_SETTINGS });
+    memoryStore.profiles.set(userId, {
+      role: 'Student',
+      goal: 'Placement GD preparation',
+      experienceLevel: 'Intermediate',
+      targetIndustry: 'General / Academic',
+      institution: '',
+      location: '',
+      speakingGoal: '',
+      profilePhoto: '',
+      notes: '',
+      settings: DEFAULT_SETTINGS
+    });
   }
   if (!memoryStore.personas.has(userId)) memoryStore.personas.set(userId, DEFAULT_PERSONAS);
   if (!memoryStore.prepStates.has(userId)) memoryStore.prepStates.set(userId, { checklist: {}, speakingGoals: {}, weakAreas: [], activeDrill: 'Opening', practiceStreak: 0 });
@@ -138,7 +155,13 @@ const getUserData = async (req, res) => {
       aiPersonas = await AiPersona.insertMany(DEFAULT_PERSONAS.map((persona) => ({ ...persona, userId })));
     }
 
-    return res.json({ profile, aiPersonas, prepState, resumeTopics, progress });
+    return res.json({
+      profile: profile ? { ...profile, settings: { ...DEFAULT_SETTINGS, ...(profile.settings || {}) } } : profile,
+      aiPersonas,
+      prepState,
+      resumeTopics,
+      progress
+    });
   } catch (error) {
     console.error('Get User Data Error:', error);
     return res.status(500).json({ error: 'Could not load user data.' });
@@ -148,11 +171,15 @@ const getUserData = async (req, res) => {
 const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { name, email, role, goal, experienceLevel, notes } = req.body;
+    const { name, email, role, goal, experienceLevel, targetIndustry, institution, location, speakingGoal, profilePhoto, notes } = req.body;
+    const cleanProfilePhoto = String(profilePhoto || '');
+    if (cleanProfilePhoto && (!cleanProfilePhoto.startsWith('data:image/') || cleanProfilePhoto.length > 750000)) {
+      return res.status(400).json({ error: 'Profile photo must be a valid image under 750KB.' });
+    }
 
     if (checkInMemoryMode()) {
       const current = getMemoryUserData(userId).profile;
-      const profile = { ...current, role, goal, experienceLevel, notes };
+      const profile = { ...current, role, goal, experienceLevel, targetIndustry, institution, location, speakingGoal, profilePhoto: cleanProfilePhoto, notes };
       memoryStore.profiles.set(userId, profile);
       return res.json({ profile });
     }
@@ -166,7 +193,7 @@ const updateProfile = async (req, res) => {
 
     const profile = await UserProfile.findOneAndUpdate(
       { userId },
-      { $set: { role, goal, experienceLevel, notes } },
+      { $set: { role, goal, experienceLevel, targetIndustry, institution, location, speakingGoal, profilePhoto: cleanProfilePhoto, notes } },
       { upsert: true, new: true }
     );
 

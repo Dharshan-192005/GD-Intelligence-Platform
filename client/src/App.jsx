@@ -2,11 +2,37 @@ import { useEffect, useState } from 'react';
 import Dashboard from './pages/Dashboard';
 import GDArena from './pages/GDArena';
 import AnalyticsReport from './pages/AnalyticsReport';
+import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import { Sparkles, MessageCircle, Home, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target, Lightbulb } from 'lucide-react';
+import { Sparkles, MessageCircle, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target } from 'lucide-react';
 import bgImage from './assets/bg-mountain.png';
 import './App.css';
+
+const DEFAULT_APP_SETTINGS = {
+  targetIndustry: 'General / Academic',
+  preferredDuration: '2 minutes',
+  voiceMode: 'Balanced AI voices',
+  themePreference: 'Professional light',
+  coachingIntensity: 'Balanced',
+  requestMode: 'Free-tier balanced',
+  interfaceDensity: 'Comfortable',
+  animationMode: 'Smooth animations',
+  sidebarMode: 'Expanded sidebar',
+  focusMode: 'Balanced workspace',
+  chatScrollMode: 'Auto-scroll chat',
+  soundEffects: 'On'
+};
+
+const getStoredSettings = () => {
+  try {
+    return { ...DEFAULT_APP_SETTINGS, ...(JSON.parse(localStorage.getItem('gd_settings')) || {}) };
+  } catch {
+    return DEFAULT_APP_SETTINGS;
+  }
+};
+
+const normalizeSettingToken = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
@@ -18,9 +44,9 @@ export default function App() {
       return null;
     }
   });
-  const [currentPage, setCurrentPage] = useState(() => currentUser ? 'dashboard' : 'login'); // login, signup, dashboard, arena, report
+  const [currentPage, setCurrentPage] = useState(() => currentUser ? 'dashboard' : 'landing'); // landing, login, signup, dashboard, arena, report
   const [activeSession, setActiveSession] = useState(null);
-  const [dashboardSection, setDashboardSection] = useState('overview');
+  const [dashboardSection, setDashboardSection] = useState('setup');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -33,19 +59,9 @@ export default function App() {
     }
   });
   const [settingsDraft, setSettingsDraft] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('gd_settings')) || {
-        targetIndustry: 'General / Academic',
-        preferredDuration: '2 minutes',
-        voiceMode: 'Balanced AI voices',
-        themePreference: 'Professional light',
-        coachingIntensity: 'Balanced',
-        requestMode: 'Free-tier balanced'
-      };
-    } catch {
-      return {};
-    }
+    return getStoredSettings();
   });
+  const activeSettings = { ...DEFAULT_APP_SETTINGS, ...settingsDraft };
 
   const authHeaders = () => {
     const token = localStorage.getItem('gd_token');
@@ -66,13 +82,14 @@ export default function App() {
       const savedUser = JSON.parse(localStorage.getItem('gd_user')) || currentUser || {};
       const mergedUser = { ...savedUser, ...(data.profile || {}) };
       localStorage.setItem('gd_user', JSON.stringify(mergedUser));
-      if (data.profile?.settings) localStorage.setItem('gd_settings', JSON.stringify(data.profile.settings));
+      const mergedSettings = { ...DEFAULT_APP_SETTINGS, ...(data.profile?.settings || {}) };
+      if (data.profile?.settings) localStorage.setItem('gd_settings', JSON.stringify(mergedSettings));
       if (data.aiPersonas) localStorage.setItem('gd_ai_personas', JSON.stringify(data.aiPersonas));
       if (data.prepState?.checklist) localStorage.setItem('gd_prep_checklist', JSON.stringify(data.prepState.checklist));
 
       setCurrentUser(mergedUser);
       setProfileDraft(mergedUser);
-      if (data.profile?.settings) setSettingsDraft(data.profile.settings);
+      if (data.profile?.settings) setSettingsDraft(mergedSettings);
     } catch (error) {
       console.warn('Account sync unavailable, using local cache:', error.message);
     }
@@ -86,13 +103,37 @@ export default function App() {
     return undefined;
   }, [currentUser?.id]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = normalizeSettingToken(activeSettings.themePreference || DEFAULT_APP_SETTINGS.themePreference);
+    root.dataset.density = normalizeSettingToken(activeSettings.interfaceDensity || DEFAULT_APP_SETTINGS.interfaceDensity);
+    root.dataset.motion = normalizeSettingToken(activeSettings.animationMode || DEFAULT_APP_SETTINGS.animationMode);
+    root.dataset.focus = normalizeSettingToken(activeSettings.focusMode || DEFAULT_APP_SETTINGS.focusMode);
+    root.dataset.sound = normalizeSettingToken(activeSettings.soundEffects || DEFAULT_APP_SETTINGS.soundEffects);
+    root.dataset.chatScroll = normalizeSettingToken(activeSettings.chatScrollMode || DEFAULT_APP_SETTINGS.chatScrollMode);
+  }, [
+    activeSettings.themePreference,
+    activeSettings.interfaceDensity,
+    activeSettings.animationMode,
+    activeSettings.focusMode,
+    activeSettings.soundEffects,
+    activeSettings.chatScrollMode
+  ]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (activeSettings.sidebarMode === 'Collapsed sidebar') setIsSidebarCollapsed(true);
+      if (activeSettings.sidebarMode === 'Expanded sidebar') setIsSidebarCollapsed(false);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [activeSettings.sidebarMode]);
+
   const dashboardNavItems = [
-    { id: 'overview', label: 'Overview', icon: Home },
-    { id: 'setup', label: 'Setup GD', icon: Settings },
-    { id: 'prep', label: 'Prep Coach', icon: Target },
-    { id: 'innovation', label: 'Innovation Lab', icon: Lightbulb },
-    { id: 'members', label: 'AI Members', icon: Users },
-    { id: 'history', label: 'History', icon: BarChart2 }
+    { id: 'setup', label: 'Start a GD', icon: Settings },
+    { id: 'prep', label: 'Quick Practice', icon: Target },
+    { id: 'innovation', label: 'Ask Community', icon: MessageCircle },
+    { id: 'members', label: 'AI Panel', icon: Users },
+    { id: 'history', label: 'My Progress', icon: BarChart2 }
   ];
 
   const goToDashboardSection = (section) => {
@@ -117,7 +158,8 @@ export default function App() {
     localStorage.removeItem('gd_token');
     setCurrentUser(null);
     setActiveSession(null);
-    setCurrentPage('login');
+    setDashboardSection('setup');
+    setCurrentPage('landing');
   };
 
   const handleCompleteSession = (completedSession) => {
@@ -131,6 +173,10 @@ export default function App() {
       role: 'Student',
       goal: 'Placement GD preparation',
       experienceLevel: 'Intermediate',
+      targetIndustry: 'General / Academic',
+      institution: '',
+      location: '',
+      speakingGoal: '',
       ...currentUser
     });
     setIsProfileOpen(true);
@@ -139,12 +185,7 @@ export default function App() {
   const openSettingsEditor = () => {
     setIsAccountMenuOpen(false);
     setSettingsDraft({
-      targetIndustry: 'General / Academic',
-      preferredDuration: '2 minutes',
-      voiceMode: 'Balanced AI voices',
-      themePreference: 'Professional light',
-      coachingIntensity: 'Balanced',
-      requestMode: 'Free-tier balanced',
+      ...DEFAULT_APP_SETTINGS,
       ...settingsDraft
     });
     setIsSettingsOpen(true);
@@ -152,6 +193,23 @@ export default function App() {
 
   const updateProfileDraft = (field, value) => {
     setProfileDraft(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleProfilePhotoChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Please choose an image file.');
+      return;
+    }
+    if (file.size > 750 * 1024) {
+      alert('Please choose an image smaller than 750KB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => updateProfileDraft('profilePhoto', reader.result);
+    reader.readAsDataURL(file);
   };
 
   const saveProfile = async (e) => {
@@ -183,12 +241,14 @@ export default function App() {
 
   const saveSettings = async (e) => {
     e.preventDefault();
-    localStorage.setItem('gd_settings', JSON.stringify(settingsDraft));
+    const nextSettings = { ...DEFAULT_APP_SETTINGS, ...settingsDraft };
+    setSettingsDraft(nextSettings);
+    localStorage.setItem('gd_settings', JSON.stringify(nextSettings));
     try {
       await fetch('http://localhost:5000/api/user-data/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ settings: settingsDraft })
+        body: JSON.stringify({ settings: nextSettings })
       });
     } catch (error) {
       console.warn('Settings saved locally only:', error.message);
@@ -212,6 +272,15 @@ export default function App() {
     }
   };
 
+  if (currentPage === 'landing') {
+    return (
+      <Landing
+        onSignIn={() => setCurrentPage('login')}
+        onSignUp={() => setCurrentPage('signup')}
+      />
+    );
+  }
+
   const isAuthPage = currentPage === 'login' || currentPage === 'signup';
 
   if (isAuthPage) {
@@ -221,14 +290,14 @@ export default function App() {
           {currentPage === 'login' && (
             <Login 
               onLogin={handleAuthSuccess} 
-              onNavigateToSignup={() => setCurrentPage('signup')} 
+              onNavigateToSignup={() => setCurrentPage('signup')}
             />
           )}
 
           {currentPage === 'signup' && (
             <Signup 
               onSignup={handleAuthSuccess} 
-              onNavigateToLogin={() => setCurrentPage('login')} 
+              onNavigateToLogin={() => setCurrentPage('login')}
             />
           )}
         </main>
@@ -238,7 +307,7 @@ export default function App() {
 
   // Split-Screen App Shell for Logged In Pages
   return (
-    <div className="app-layout">
+      <div className="app-layout">
       {/* App Sidebar */}
       <div className={`app-sidebar ${isSidebarCollapsed ? 'app-sidebar-collapsed' : ''}`} style={{ backgroundImage: `url(${bgImage})` }}>
         <button
@@ -251,7 +320,7 @@ export default function App() {
         </button>
 
         <div className="app-sidebar-content">
-          <div className="logo" style={{ color: 'white', marginBottom: '38px', cursor: 'pointer' }} onClick={() => goToDashboardSection('overview')}>
+          <div className="logo" style={{ color: 'white', marginBottom: '38px', cursor: 'pointer' }} onClick={() => goToDashboardSection('setup')}>
             <MessageCircle size={28} />
             {!isSidebarCollapsed && <span>GD Intelligence</span>}
           </div>
@@ -280,7 +349,7 @@ export default function App() {
 
             {(currentPage === 'arena' || currentPage === 'report') && (
               <div className="sidebar-active-session" style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#fb923c', fontWeight: 700, marginTop: '12px', padding: '12px 14px' }}>
-                <Users size={20} /> {!isSidebarCollapsed && 'Active Session'}
+                <Users size={20} /> {!isSidebarCollapsed && 'Live Round'}
               </div>
             )}
           </div>
@@ -290,7 +359,7 @@ export default function App() {
             style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '12px', opacity: 0.6, cursor: 'pointer', fontWeight: 500 }} 
             onClick={handleSignOut}
           >
-            <LogOut size={20} /> {!isSidebarCollapsed && 'Sign Out'}
+            <LogOut size={20} /> {!isSidebarCollapsed && 'Log Out'}
           </div>
         </div>
       </div>
@@ -300,7 +369,7 @@ export default function App() {
         {/* Header */}
         <nav className="navbar" style={{ padding: '20px 40px' }}>
           <h2 style={{ fontSize: '1.25rem', margin: 0, color: 'var(--secondary)' }}>
-            {currentPage === 'dashboard' && 'Welcome Back'}
+            {currentPage === 'dashboard' && 'Practice Workspace'}
             {currentPage === 'arena' && 'GD Simulation Arena'}
             {currentPage === 'report' && 'Executive Coaching Report'}
           </h2>
@@ -328,7 +397,17 @@ export default function App() {
             {currentUser && (
               <div className="account-menu-wrap">
                 <button type="button" className="profile-trigger" onClick={() => setIsAccountMenuOpen(prev => !prev)}>
-                  <span>{currentUser.name}</span>
+                  <span className="profile-orbit-avatar">
+                    {currentUser.profilePhoto ? (
+                      <img src={currentUser.profilePhoto} alt={currentUser.name || 'Profile'} />
+                    ) : (
+                      currentUser.name?.charAt(0)?.toUpperCase() || 'U'
+                    )}
+                  </span>
+                  <span className="profile-trigger-copy">
+                    <strong>{currentUser.name}</strong>
+                    <small>{currentUser.role || 'GD learner'}</small>
+                  </span>
                   <UserRound size={16} />
                 </button>
                 {isAccountMenuOpen && (
@@ -353,7 +432,11 @@ export default function App() {
             <form className="profile-panel" onSubmit={saveProfile}>
               <div className="profile-panel-header">
                 <div className="profile-avatar-large">
-                  {profileDraft.name?.charAt(0)?.toUpperCase() || 'U'}
+                  {profileDraft.profilePhoto ? (
+                    <img src={profileDraft.profilePhoto} alt={profileDraft.name || 'Profile preview'} />
+                  ) : (
+                    profileDraft.name?.charAt(0)?.toUpperCase() || 'U'
+                  )}
                 </div>
                 <div>
                   <span>Edit Profile</span>
@@ -363,6 +446,19 @@ export default function App() {
                 <button type="button" className="profile-close" onClick={() => setIsProfileOpen(false)} title="Close profile editor">
                   <X size={18} />
                 </button>
+              </div>
+
+              <div className="profile-photo-row">
+                <label className="profile-photo-upload">
+                  Profile Photo
+                  <input type="file" accept="image/*" onChange={handleProfilePhotoChange} />
+                  <span>Choose image</span>
+                </label>
+                {profileDraft.profilePhoto && (
+                  <button type="button" className="btn-secondary" onClick={() => updateProfileDraft('profilePhoto', '')}>
+                    Remove Photo
+                  </button>
+                )}
               </div>
 
               <div className="profile-form-grid">
@@ -402,7 +498,35 @@ export default function App() {
                     <option>Advanced</option>
                   </select>
                 </label>
+                <label>
+                  Target Industry
+                  <select value={profileDraft.targetIndustry || 'General / Academic'} onChange={(e) => updateProfileDraft('targetIndustry', e.target.value)}>
+                    <option>General / Academic</option>
+                    <option>Technology</option>
+                    <option>Finance</option>
+                    <option>Consulting</option>
+                    <option>Marketing</option>
+                    <option>Operations</option>
+                  </select>
+                </label>
+                <label>
+                  Institution / Company
+                  <input value={profileDraft.institution || ''} onChange={(e) => updateProfileDraft('institution', e.target.value)} />
+                </label>
+                <label>
+                  Location
+                  <input value={profileDraft.location || ''} onChange={(e) => updateProfileDraft('location', e.target.value)} />
+                </label>
               </div>
+
+              <label className="profile-notes">
+                Speaking Goal
+                <textarea
+                  value={profileDraft.speakingGoal || ''}
+                  onChange={(e) => updateProfileDraft('speakingGoal', e.target.value)}
+                  placeholder="Example: I want to speak first, use examples, and handle aggressive participants calmly."
+                />
+              </label>
 
               <label className="profile-notes">
                 Personal Notes
@@ -496,6 +620,59 @@ export default function App() {
                     <option>More responsive</option>
                   </select>
                 </label>
+                <label>
+                  Interface Density
+                  <select value={settingsDraft.interfaceDensity || 'Comfortable'} onChange={(e) => updateSettingsDraft('interfaceDensity', e.target.value)}>
+                    <option>Comfortable</option>
+                    <option>Compact</option>
+                    <option>Spacious</option>
+                  </select>
+                </label>
+                <label>
+                  Animation Mode
+                  <select value={settingsDraft.animationMode || 'Smooth animations'} onChange={(e) => updateSettingsDraft('animationMode', e.target.value)}>
+                    <option>Smooth animations</option>
+                    <option>Reduced motion</option>
+                  </select>
+                </label>
+                <label>
+                  Sidebar Behavior
+                  <select value={settingsDraft.sidebarMode || 'Expanded sidebar'} onChange={(e) => updateSettingsDraft('sidebarMode', e.target.value)}>
+                    <option>Expanded sidebar</option>
+                    <option>Collapsed sidebar</option>
+                    <option>Manual sidebar</option>
+                  </select>
+                </label>
+                <label>
+                  Focus Mode
+                  <select value={settingsDraft.focusMode || 'Balanced workspace'} onChange={(e) => updateSettingsDraft('focusMode', e.target.value)}>
+                    <option>Balanced workspace</option>
+                    <option>Calm reading</option>
+                    <option>High energy practice</option>
+                  </select>
+                </label>
+                <label>
+                  Chat Scrolling
+                  <select value={settingsDraft.chatScrollMode || 'Auto-scroll chat'} onChange={(e) => updateSettingsDraft('chatScrollMode', e.target.value)}>
+                    <option>Auto-scroll chat</option>
+                    <option>Manual chat scroll</option>
+                  </select>
+                </label>
+                <label>
+                  Sound Effects
+                  <select value={settingsDraft.soundEffects || 'On'} onChange={(e) => updateSettingsDraft('soundEffects', e.target.value)}>
+                    <option>On</option>
+                    <option>Off</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="settings-live-preview">
+                <span>Live Preview</span>
+                <strong>{activeSettings.themePreference} · {activeSettings.interfaceDensity}</strong>
+                <p>
+                  Theme, spacing, motion, and sidebar behavior update immediately. Round defaults apply when you open Start a GD.
+                </p>
               </div>
 
               <div className="profile-actions">
@@ -519,6 +696,8 @@ export default function App() {
               onViewReport={handleViewReport}
               activeSection={dashboardSection}
               onChangeSection={setDashboardSection}
+              currentUser={currentUser}
+              appSettings={activeSettings}
             />
           )}
           

@@ -49,6 +49,18 @@ const SessionSchema = new mongoose.Schema({
     type: Number,
     default: 4
   },
+  aiPersonas: [
+    {
+      name: { type: String, required: true },
+      role: { type: String, default: 'AI Participant' },
+      color: { type: String, default: '#0f766e' },
+      style: { type: String, default: 'Balanced and professional' },
+      pressure: { type: Number, default: 60 },
+      desc: { type: String, default: '' },
+      initialIntro: { type: String, default: '' },
+      prompt: { type: String, default: '' }
+    }
+  ],
   transcript: [TranscriptSchema],
   
   // Real-time calculated speaking stats
