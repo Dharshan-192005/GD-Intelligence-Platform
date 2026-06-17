@@ -654,53 +654,46 @@ const buildMiniGdFallback = ({ topic, userText, memberRole, hasExample, hasLink,
   const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
   const inputQuality = analyzeMiniGdInput(userText);
   const role = String(memberRole || '').toLowerCase();
+  const hasClearStand = /\b(i think|i believe|in my view|my point|ai can|ai will|ai should|it can|this can|creates?|removes?|reduces?|improves?|affects?)\b/i.test(userText || '');
+  const firstSentence = inputQuality.cleaned.split(/[.!?]/)[0]?.trim().slice(0, 130);
+  const styleLabel = role.includes('aggressive') || role.includes('dominant') || role.includes('overconfident') || role.includes('interrupt')
+    ? 'I will be direct here'
+    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
+      ? 'Let us make this measurable'
+      : role.includes('emotional') || role.includes('nervous') || role.includes('hr')
+        ? 'Let us make this human and clear'
+        : 'Let us shape this calmly';
 
   if (inputQuality.isGibberish) {
-    const prompts = [
-      `I cannot treat "${inputQuality.cleaned.slice(0, 28) || 'that'}" as a GD argument yet. Give me one clear point on whether AI creates more jobs or removes them.`,
-      `That is not a meaningful contribution yet. Take a side on ${topicCore}, then add one reason.`,
-      `In a real GD, this answer would lose attention quickly. Say one practical impact of AI on employment in a complete sentence.`
-    ];
+    const sample = `AI can ${topicCore.toLowerCase().includes('employment') ? 'create technical jobs, but it may reduce routine manual work' : `affect ${topicCore.toLowerCase()}`} because...`;
 
     return {
-      memberReply: prompts[turnCount % prompts.length],
+      memberReply: `Hey, I cannot treat "${inputQuality.cleaned.slice(0, 36) || 'that'}" as a GD answer yet. In a real GD, short replies or random letters do not show your stand. Try one complete sentence like: "${sample}" What side do you want to take?`,
       coachFeedback: `Your response is ${inputQuality.reason || 'not clear enough'}; write a complete GD point with a reason.`,
       score: Math.min(8, Math.max(1, inputQuality.wordCount)),
-      nextPrompt: `Give one proper sentence on ${topicCore}.`
+      nextPrompt: `Write one complete point about ${topicCore} using point plus because.`
     };
   }
 
-  const aggressiveReplies = [
-    `Good start, but it is still too broad. If AI affects employment, name the exact group: freshers, skilled workers, or companies.`,
-    `Let me challenge that like a strict evaluator. Give one real workplace situation where AI helps or hurts jobs.`,
-    `Your point needs sharper evidence. What proof would make the group accept this view?`
-  ];
-  const logicalReplies = [
-    `Let us make this measurable. Are you talking about job loss, productivity, reskilling, or hiring quality?`,
-    `Separate short-term displacement from long-term opportunity. Which side does your example support?`,
-    `Good direction. Add one number, study, company example, or comparison to make it stronger.`
-  ];
-  const emotionalReplies = [
-    `I understand the concern, but bring in the human impact. How does this affect a student or employee preparing for work?`,
-    `That point can connect well if you show who feels the pressure most. What happens to people who cannot reskill quickly?`,
-    `Make it more relatable. Give one everyday example of someone helped or harmed by AI at work.`
-  ];
-  const neutralReplies = [
-    `Link your idea directly to ${topicCore}. Add one reason and then one example so the group can respond.`,
-    `That can work if you complete the structure: point, reason, example, and conclusion.`,
-    `Push it further. What would you say if another speaker challenged this point?`
-  ];
-  const pool = role.includes('aggressive') || role.includes('dominant') || role.includes('overconfident') || role.includes('interrupt')
-    ? aggressiveReplies
-    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
-      ? logicalReplies
-      : role.includes('emotional') || role.includes('nervous') || role.includes('hr')
-        ? emotionalReplies
-        : neutralReplies;
-  const score = Math.min(82, Math.round(Math.min(inputQuality.wordCount, 55) * 1.2 + (hasExample ? 24 : 0) + (hasLink ? 16 : 0)));
+  const nextNeed = !hasClearStand
+    ? 'First make your stand visible, because the group should know whether you support, oppose, or balance the topic.'
+    : !hasExample
+      ? 'Now add proof: name one real group, situation, number, company, or workplace example.'
+      : !hasLink
+        ? 'Good support. Now link it back with a closing line such as "therefore" or "this shows".'
+        : 'This is becoming GD-ready. Now make the conclusion crisp and easy for listeners to remember.';
+  const rewrite = hasExample
+    ? `A cleaner version could be: "${firstSentence}. This matters because it changes who gets opportunities and who needs reskilling."`
+    : `A stronger version could be: "${firstSentence}, because it affects real people like freshers, employees, or companies in measurable ways."`;
+  const score = Math.min(88, Math.round(
+    Math.min(inputQuality.wordCount, 60) * 1.1 +
+    (hasClearStand ? 18 : 6) +
+    (hasExample ? 24 : 0) +
+    (hasLink ? 16 : 0)
+  ));
 
   return {
-    memberReply: pool[turnCount % pool.length],
+    memberReply: `${styleLabel}: I can see the idea you are building around "${firstSentence}." ${nextNeed} ${rewrite}`,
     coachFeedback: hasExample
       ? 'Good, you added support. Now make the conclusion sharper and topic-linked.'
       : 'Your point is understandable, but it needs one concrete example or data point.',
@@ -710,8 +703,8 @@ const buildMiniGdFallback = ({ topic, userText, memberRole, hasExample, hasLink,
 };
 
 const runMiniGdTurn = async ({ topic, transcript = [], userText, member = {}, industryContext = 'General / Academic' }) => {
-  const memberRole = member.role || 'Logical Thinker';
-  const personaPrompt = member.prompt || `Use a ${memberRole} coaching style for short GD practice.`;
+  const memberRole = member.role || 'Balanced GD Coach';
+  const personaPrompt = member.prompt || `Use a ${memberRole} teacher coaching style for short GD practice.`;
   const transcriptFormatted = transcript.slice(-8).map(t => `${t.speaker}: ${t.text}`).join('\n');
   const inputQuality = analyzeMiniGdInput(userText);
   const wordCount = inputQuality.wordCount;
@@ -733,8 +726,8 @@ const runMiniGdTurn = async ({ topic, transcript = [], userText, member = {}, in
   if (hasApiKey && genAI) {
     try {
       const model = buildModel({ temperature: 0.75, topP: 0.9, maxOutputTokens: 420 });
-      const prompt = `You are an interactive Group Discussion teacher and practice coach.
-You are NOT a GD participant. Do not roleplay as a panel member. Guide the user like a teacher.
+      const prompt = `You are an interactive Group Discussion teacher and friendly practice coach.
+You are NOT a GD participant. Do not roleplay as a panel member. Talk like a helpful teacher who gives specific GD advice.
 
 TOPIC: "${topic}"
 INDUSTRY CONTEXT: ${industryContext}
@@ -755,7 +748,7 @@ INPUT QUALITY:
 
 Return ONLY raw JSON:
 {
-  "memberReply": "<teacher-style response: acknowledge, correct or guide, then ask the next improvement question in 1-2 sentences>",
+  "memberReply": "<friendly coach response in 3-5 short sentences: acknowledge the user's exact answer, explain what works or fails, provide one improved sample line, then ask the next improvement question>",
   "coachFeedback": "<one concise coaching sentence about the user's answer quality>",
   "score": <0-100>,
   "nextPrompt": "<one short follow-up question for the user>"
@@ -768,8 +761,9 @@ Rules:
 - Directly respond to the user's latest sentence, not only the topic.
 - If the latest user response is unclear, random letters, repeated characters, or not a complete GD point, call that out and score below 10.
 - Coach feedback must be honest. If the user says only "hi", "ok", or a very short phrase, score below 15.
-- Act like a teacher: guide, correct, improve, and ask the next step.
-- Keep everything short enough for quick mini practice.`;
+- Act like a teacher: be friendly, explain the problem, show a better version, and ask the next step.
+- Do not give the same response for different weak inputs; refer to the actual words the user typed.
+- Keep everything short enough for quick mini practice, but more useful than a one-line warning.`;
 
       const result = await runGeminiRequest('mini-gd-turn', () => model.generateContent(prompt), {
         maxQueueWaitMs: 16000

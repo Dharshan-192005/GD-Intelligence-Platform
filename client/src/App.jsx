@@ -5,7 +5,7 @@ import AnalyticsReport from './pages/AnalyticsReport';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
-import { Sparkles, MessageCircle, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target } from 'lucide-react';
+import { Sparkles, MessageCircle, BrainCircuit, LogOut, Users, BarChart2, Settings, ChevronLeft, ChevronRight, UserRound, X, Save, Target } from 'lucide-react';
 import bgImage from './assets/bg-mountain.png';
 import './App.css';
 
@@ -321,8 +321,8 @@ export default function App() {
 
         <div className="app-sidebar-content">
           <div className="logo" style={{ color: 'white', marginBottom: '38px', cursor: 'pointer' }} onClick={() => goToDashboardSection('setup')}>
-            <MessageCircle size={28} />
-            {!isSidebarCollapsed && <span>GD Intelligence</span>}
+            <BrainCircuit size={28} />
+            {!isSidebarCollapsed && <span>SpeakEdge GD</span>}
           </div>
           
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>

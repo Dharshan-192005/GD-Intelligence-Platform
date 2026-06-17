@@ -55,54 +55,52 @@ const analyzeMiniGdInput = (text = '') => {
   };
 };
 
-const buildMiniGdLocalTurn = ({ topic, text, member, turnCount }) => {
+const buildMiniGdLocalTurn = ({ topic, text, member }) => {
   const input = analyzeMiniGdInput(text);
   const role = String(member?.role || '').toLowerCase();
   const topicCore = String(topic || 'this topic').replace(/[?.!]+$/, '');
-  const hasExample = /example|for instance|such as|case|data|study|because|since|company|report/i.test(text);
+  const hasExample = /example|for instance|such as|case|data|study|because|since|company|report|fresher|employee|developer|worker|startup|industry/i.test(text);
   const hasLink = /therefore|so|this shows|as a result|in conclusion|overall|this means/i.test(text);
+  const hasClearStand = /\b(i think|i believe|in my view|my point|ai can|ai will|ai should|it can|this can|creates?|removes?|reduces?|improves?|affects?)\b/i.test(text);
+  const firstSentence = input.cleaned.split(/[.!?]/)[0]?.trim().slice(0, 130);
+  const styleLabel = role.includes('aggressive') || role.includes('dominant') || role.includes('interrupt')
+    ? 'I will be direct here'
+    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
+      ? 'Let us make it measurable'
+      : 'Let us shape this calmly';
 
   if (input.isGibberish) {
-    const replies = [
-      `I cannot count that as a GD point yet. Give one complete sentence on whether AI helps or harms employment.`,
-      `That looks like random or incomplete text. Take a clear stand on ${topicCore} first.`,
-      `In a real GD, this would not move the discussion. Say one practical impact of AI on jobs.`
-    ];
+    const sample = `AI can ${topicCore.toLowerCase().includes('employment') ? 'create technical jobs, but it may reduce routine manual work' : `affect ${topicCore.toLowerCase()}`} because...`;
     return {
-      memberReply: replies[turnCount % replies.length],
-      coachFeedback: 'This is not a meaningful GD answer yet. Use a clear point with a reason.',
+      memberReply: `Hey, I cannot treat "${input.cleaned.slice(0, 36) || 'that'}" as a GD answer yet. In a real GD, greetings or repeated letters do not show your stand. Try one complete sentence like: "${sample}" What side do you want to take?`,
+      coachFeedback: 'Your reply is not GD-ready yet because it has no clear point, reason, or example.',
       score: Math.min(8, Math.max(1, input.wordCount)),
-      nextPrompt: `Write one proper sentence about ${topicCore}.`
+      nextPrompt: `Write one complete point about ${topicCore} using point plus because.`
     };
   }
 
-  const aggressive = [
-    `Good start, but it is still broad. Name who is affected by AI: freshers, employees, companies, or customers.`,
-    `Let me challenge that like a tough evaluator: what proof shows this actually happens in workplaces?`,
-    `Make it sharper. Is AI replacing jobs or changing the skills needed for jobs?`
-  ];
-  const logical = [
-    `Let us measure it. Are you arguing about productivity, job loss, reskilling, or hiring quality?`,
-    `Separate short-term disruption from long-term opportunity. Which one does your point support?`,
-    `Add one example or data point so your argument becomes testable.`
-  ];
-  const neutral = [
-    `Link that directly to ${topicCore}. Add one reason and one example.`,
-    `That can work if you complete it with point, reason, example, and conclusion.`,
-    `Push it further. How would you respond if another speaker disagrees?`
-  ];
-  const pool = role.includes('aggressive') || role.includes('dominant') || role.includes('interrupt')
-    ? aggressive
-    : role.includes('logical') || role.includes('technical') || role.includes('analyst')
-      ? logical
-      : neutral;
-  const score = Math.min(82, Math.round(Math.min(input.wordCount, 55) * 1.2 + (hasExample ? 24 : 0) + (hasLink ? 16 : 0)));
+  const nextNeed = !hasClearStand
+    ? `First, make your stand visible. Start with "I believe..." or "My view is..." so listeners know your direction.`
+    : !hasExample
+      ? `Now add proof. A GD answer becomes stronger when you name a real group, situation, number, company, or classroom/workplace example.`
+      : !hasLink
+        ? `Good support. Now close the loop with "therefore" or "this shows" so your point returns to the main topic.`
+        : `This is moving well. Your next improvement is to make it sharper and easier to remember in one strong concluding line.`;
+  const rewrite = hasExample
+    ? `A cleaner version could be: "${firstSentence}. This matters because it changes who gets opportunities and who needs reskilling."`
+    : `A stronger version could be: "${firstSentence}, because it affects real people like freshers, employees, or companies in measurable ways."`;
+  const score = Math.min(88, Math.round(
+    Math.min(input.wordCount, 60) * 1.1 +
+    (hasClearStand ? 18 : 6) +
+    (hasExample ? 24 : 0) +
+    (hasLink ? 16 : 0)
+  ));
 
   return {
-    memberReply: pool[turnCount % pool.length],
-    coachFeedback: hasExample ? 'Good support. Now add a sharper conclusion.' : 'The point is understandable, but it needs one concrete example.',
+    memberReply: `${styleLabel}: I can see the idea you are trying to build around "${firstSentence}." ${nextNeed} ${rewrite}`,
+    coachFeedback: hasExample ? 'Good support is present; improve the ending so the answer sounds complete.' : 'The point is understandable, but it needs one concrete example before it feels like a real GD contribution.',
     score,
-    nextPrompt: hasExample ? `Can you conclude your stand on ${topicCore}?` : `Can you give one practical example related to ${topicCore}?`
+    nextPrompt: hasExample ? `Can you finish this with one clear conclusion on ${topicCore}?` : `Can you add one practical example related to ${topicCore}?`
   };
 };
 
@@ -781,7 +779,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
     setMiniGdTurns([
       {
         speaker: 'Coach',
-        text: `Mini GD started. Topic: ${topic}. I will act as your teacher and guide your answer step by step. Start with one clear point, one reason, and one example.`
+        text: `Hi, I am your GD coach for this quick practice. Topic: ${topic}. Type naturally, and I will help you turn your answer into a stronger GD point with a stand, reason, example, and closing link.`
       }
     ]);
     setMiniGdState('running');
@@ -1354,9 +1352,9 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
       <div className="flat-card mini-gd-lab">
         <div className="mini-gd-header">
           <div>
-            <span><Radio size={16} /> Working Mini GD</span>
-            <h2>Practice a live GD response</h2>
-            <p>Start a small GD simulation, reply to the prompt, and get instant coaching before entering the full arena.</p>
+            <span><Radio size={16} /> GD Coach Chat</span>
+            <h2>Talk with your practice coach</h2>
+            <p>Ask questions or type a GD answer. The coach responds like a teacher with friendly, specific advice.</p>
           </div>
           <div className={`mini-gd-clock ${miniGdDuration === 'unlimited' ? 'is-unlimited' : ''}`}>{miniGdClockLabel}</div>
         </div>
@@ -1365,17 +1363,25 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
           <div className="mini-gd-chat-panel">
             <div className="mini-gd-feed" ref={miniGdFeedRef}>
               {(visibleMiniGdTurns.length ? visibleMiniGdTurns : [
-                { speaker: 'System', text: 'Press Start Mini GD to begin a quick practice simulation.' }
-              ]).map((turn, idx) => (
-              <div key={`${turn.speaker}-${idx}`} className={`mini-gd-message ${turn.speaker === 'You' ? 'is-user' : ''}`}>
-                <strong>{turn.speaker}</strong>
-                <p>{turn.text}</p>
-              </div>
-              ))}
+                { speaker: 'System', text: 'Press Start Coach Chat to get step-by-step GD guidance.' }
+              ]).map((turn, idx) => {
+                const isUserTurn = turn.speaker === 'You';
+                const isSystemTurn = turn.speaker === 'System';
+                const speakerLabel = turn.speaker === 'Coach' ? 'GD Coach' : turn.speaker;
+                return (
+                  <div
+                    key={`${turn.speaker}-${idx}`}
+                    className={`mini-gd-message ${isUserTurn ? 'is-user' : isSystemTurn ? 'is-system' : 'is-coach'}`}
+                  >
+                    <strong>{speakerLabel}</strong>
+                    <p>{turn.text}</p>
+                  </div>
+                );
+              })}
               {miniGdThinking && (
-                <div className="mini-gd-message">
-                  <strong>Coach</strong>
-                  <p>Reviewing your point...</p>
+                <div className="mini-gd-message is-coach is-thinking">
+                  <strong>GD Coach</strong>
+                  <p>Reading your answer and preparing useful feedback...</p>
                 </div>
               )}
               <div ref={miniGdEndRef} />
@@ -1386,7 +1392,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
                 value={miniGdInput}
                 onChange={(e) => setMiniGdInput(e.target.value)}
                 disabled={miniGdState !== 'running' || miniGdThinking}
-                placeholder={miniGdState === 'running' ? 'Type your GD answer for the coach...' : 'Start Mini GD to unlock response box'}
+                placeholder={miniGdState === 'running' ? 'Ask your coach or type your GD answer...' : 'Start Coach Chat to unlock response box'}
               />
               <button type="submit" className="btn-secondary" disabled={miniGdState !== 'running' || miniGdThinking || !miniGdInput.trim()}>
                 {miniGdThinking ? 'Thinking' : 'Send'}
@@ -1394,9 +1400,10 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
             </form>
           </div>
 
-          <div className="mini-gd-side">
-            <div className="mini-gd-coach-card">
-              <strong>Coaching Style</strong>
+            <div className="mini-gd-side">
+              <div className="mini-gd-coach-card">
+              <strong>Coach Mode</strong>
+              <span>Choose the type of feedback pressure you want.</span>
               <select
                 value={miniGdMemberIndex}
                 onChange={(e) => setMiniGdMemberIndex(Number(e.target.value))}
@@ -1404,7 +1411,7 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
               >
                 {aiPersonas.map((persona, index) => (
                   <option key={`${persona.name}-${index}`} value={index}>
-                    {persona.role}
+                    {persona.role} coach
                   </option>
                 ))}
               </select>
@@ -1430,18 +1437,18 @@ export default function Dashboard({ onStartSession, onViewReport, activeSection 
             <div className="mini-gd-action-stack">
               <button type="button" className="btn-primary" onClick={startMiniGd}>
                 <Play size={16} fill="white" />
-                {miniGdState === 'running' ? 'Restart Mini GD' : 'Start Mini GD'}
+                {miniGdState === 'running' ? 'Restart Coach Chat' : 'Start Coach Chat'}
               </button>
               {miniGdState === 'running' && (
                 <button type="button" className="btn-danger mini-gd-end-button" onClick={endMiniGd}>
-                  End Mini GD
+                  End Coach Chat
                 </button>
               )}
             </div>
             <div className="mini-gd-status-card">
               <span>Status</span>
               <strong>{miniGdState === 'finished' ? 'Completed' : miniGdState === 'running' ? 'Live practice' : 'Ready'}</strong>
-              <small>{miniGdState === 'running' ? 'Only new messages scroll inside the chat.' : 'Choose a member and start when ready.'}</small>
+              <small>{miniGdState === 'running' ? 'Only new messages scroll inside the chat.' : 'Choose a coach mode and start when ready.'}</small>
             </div>
           </div>
         </div>
